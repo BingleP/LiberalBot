@@ -23,7 +23,9 @@ A Discord music bot that plays audio from YouTube into voice channels using slas
 
 - Python 3.10+
 - FFmpeg installed and available on your PATH
+- Deno installed and available on your PATH (used by yt-dlp to solve YouTube's JS challenges)
 - A Discord bot token
+- A YouTube cookies file (to bypass YouTube bot detection)
 
 ## Setup
 
@@ -39,7 +41,7 @@ cd LiberalBot
 ```bash
 python -m venv venv
 source venv/bin/activate   # Windows: venv\Scripts\activate
-pip install discord.py yt-dlp
+pip install discord.py yt-dlp PyNaCl
 ```
 
 ### 3. Install FFmpeg
@@ -49,7 +51,23 @@ pip install discord.py yt-dlp
 - **Windows:** Download from [ffmpeg.org](https://ffmpeg.org/download.html) and add to PATH
 - **macOS:** `brew install ffmpeg`
 
-### 4. Configure your bot token
+### 4. Install Deno
+
+- **Arch/CachyOS:** `sudo pacman -S deno`
+- **Linux/macOS:** `curl -fsSL https://deno.land/install.sh | sh`
+- **Windows:** `irm https://deno.land/install.ps1 | iex`
+
+### 5. Export YouTube cookies
+
+YouTube requires authentication to serve audio streams. Export your cookies from a browser where you're logged into YouTube:
+
+```bash
+yt-dlp --cookies-from-browser firefox --cookies cookies.txt --skip-download "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+```
+
+Then update the `cookiefile` path in `YTDL_OPTS` inside `bot.py` to point to your cookies file. Cookies expire periodically and will need to be re-exported when they do.
+
+### 6. Configure your bot token
 
 Create a `.env` file in the project root:
 
@@ -57,7 +75,7 @@ Create a `.env` file in the project root:
 DISCORD_TOKEN=your_bot_token_here
 ```
 
-### 5. Configure your guild ID
+### 7. Configure your guild ID
 
 In `bot.py`, update the `GUILD` variable with your server's ID:
 
@@ -65,14 +83,14 @@ In `bot.py`, update the `GUILD` variable with your server's ID:
 GUILD = discord.Object(id=YOUR_GUILD_ID_HERE)
 ```
 
-### 6. Set up the Discord application
+### 8. Set up the Discord application
 
 1. Go to the [Discord Developer Portal](https://discord.com/developers/applications)
 2. Create a new application and add a Bot
 3. Under **Privileged Gateway Intents**, enable **Message Content Intent**
 4. Invite the bot to your server with the `bot` and `applications.commands` scopes and `Connect` + `Speak` voice permissions
 
-### 7. Run the bot
+### 9. Run the bot
 
 ```bash
 python bot.py
