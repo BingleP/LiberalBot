@@ -5,6 +5,8 @@ from discord.ext import commands
 import yt_dlp
 from collections import deque
 
+COLOUR = 0x9B59B6  # purple accent
+
 # ── FFMPEG OPTIONS ──────────────────────────────────────────────────────────
 FFMPEG_BEFORE_OPTS = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
 FFMPEG_OPTS = {"options": "-vn", "before_options": FFMPEG_BEFORE_OPTS}
@@ -32,11 +34,21 @@ def make_ytdl():
 
 # ── SONG ────────────────────────────────────────────────────────────────────
 class Song:
-    def __init__(self, url: str, title: str, duration: int, requester: str):
+    def __init__(
+        self,
+        url: str,
+        title: str,
+        duration: int,
+        requester: str,
+        thumbnail: str = "",
+        webpage_url: str = "",
+    ):
         self.url = url
         self.title = title
         self.duration = duration
         self.requester = requester
+        self.thumbnail = thumbnail
+        self.webpage_url = webpage_url
 
     @classmethod
     async def from_query(cls, query: str, requester: str) -> list["Song"]:
@@ -68,7 +80,9 @@ class Song:
         url = entry.get("url") or entry.get("webpage_url", "")
         title = entry.get("title", "Unknown")
         duration = entry.get("duration") or 0
-        return cls(url, title, duration, requester)
+        thumbnail = entry.get("thumbnail", "")
+        webpage_url = entry.get("webpage_url", "")
+        return cls(url, title, duration, requester, thumbnail, webpage_url)
 
     def audio_source(self) -> discord.FFmpegPCMAudio:
         return discord.FFmpegPCMAudio(self.url, **FFMPEG_OPTS)
@@ -77,6 +91,29 @@ class Song:
         m, s = divmod(self.duration, 60)
         h, m = divmod(m, 60)
         return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+    def _title_link(self) -> str:
+        return f"[{self.title}]({self.webpage_url})" if self.webpage_url else self.title
+
+    def now_playing_embed(self) -> discord.Embed:
+        embed = discord.Embed(title="Now Playing", description=self._title_link(), colour=COLOUR)
+        embed.add_field(name="Duration", value=self.fmt_duration(), inline=True)
+        embed.add_field(name="Requested by", value=self.requester, inline=True)
+        if self.thumbnail:
+            embed.set_thumbnail(url=self.thumbnail)
+        return embed
+
+    def queued_embed(self, position: int) -> discord.Embed:
+        embed = discord.Embed(
+            title=f"Added to Queue \u2014 #{position}",
+            description=self._title_link(),
+            colour=COLOUR,
+        )
+        embed.add_field(name="Duration", value=self.fmt_duration(), inline=True)
+        embed.add_field(name="Requested by", value=self.requester, inline=True)
+        if self.thumbnail:
+            embed.set_thumbnail(url=self.thumbnail)
+        return embed
 
 
 # ── GUILD STATE ─────────────────────────────────────────────────────────────
@@ -91,9 +128,9 @@ class GuildState:
     def set_channel(self, channel: discord.TextChannel):
         self._text_channel = channel
 
-    async def send(self, content: str):
+    async def send(self, embed: discord.Embed | None = None, content: str | None = None):
         if self._text_channel:
-            await self._text_channel.send(content)
+            await self._text_channel.send(content=content, embed=embed)
 
 
 # ── BOT ──────────────────────────────────────────────────────────────────────
@@ -108,6 +145,19 @@ def get_state(guild_id: int) -> GuildState:
     if guild_id not in states:
         states[guild_id] = GuildState()
     return states[guild_id]
+
+
+async def update_presence(song: Song | None):
+    if song:
+        await bot.change_presence(
+            activity=discord.Activity(type=discord.ActivityType.listening, name=song.title),
+            status=discord.Status.online,
+        )
+    else:
+        await bot.change_presence(
+            activity=discord.Activity(type=discord.ActivityType.listening, name="nothing — use /play"),
+            status=discord.Status.idle,
+        )
 
 
 # ── PLAYBACK ─────────────────────────────────────────────────────────────────
@@ -125,7 +175,13 @@ def play_next(vc: discord.VoiceClient, state: GuildState, error=None):
 
     if not state.queue:
         state.current = None
-        asyncio.run_coroutine_threadsafe(state.send("Queue finished. See you next time!"), bot.loop)
+        embed = discord.Embed(
+            title="Queue Finished",
+            description="Nothing left to play. Add more songs with `/play`!",
+            colour=COLOUR,
+        )
+        asyncio.run_coroutine_threadsafe(state.send(embed=embed), bot.loop)
+        asyncio.run_coroutine_threadsafe(update_presence(None), bot.loop)
         return
 
     song = state.queue.popleft()
@@ -133,13 +189,17 @@ def play_next(vc: discord.VoiceClient, state: GuildState, error=None):
     source = discord.PCMVolumeTransformer(song.audio_source())
     vc.play(source, after=lambda e: play_next(vc, state, e))
 
-    msg = f"Now playing: **{song.title}** `[{song.fmt_duration()}]` — requested by {song.requester}"
-    asyncio.run_coroutine_threadsafe(state.send(msg), bot.loop)
+    asyncio.run_coroutine_threadsafe(state.send(embed=song.now_playing_embed()), bot.loop)
+    asyncio.run_coroutine_threadsafe(update_presence(song), bot.loop)
 
 
 async def ensure_voice(interaction: discord.Interaction) -> discord.VoiceClient | None:
     if interaction.user.voice is None:
-        await interaction.followup.send("You need to be in a voice channel first.")
+        embed = discord.Embed(
+            description="You need to be in a voice channel first.",
+            colour=discord.Colour.red(),
+        )
+        await interaction.followup.send(embed=embed)
         return None
 
     vc: discord.VoiceClient | None = interaction.guild.voice_client
@@ -168,7 +228,11 @@ async def play(interaction: discord.Interaction, query: str):
     songs = await Song.from_query(query, interaction.user.display_name)
 
     if not songs:
-        await interaction.followup.send("Could not find anything for that query.")
+        embed = discord.Embed(
+            description="Could not find anything for that query.",
+            colour=discord.Colour.red(),
+        )
+        await interaction.followup.send(embed=embed)
         return
 
     for song in songs:
@@ -176,13 +240,17 @@ async def play(interaction: discord.Interaction, query: str):
 
     if len(songs) == 1:
         if vc.is_playing() or vc.is_paused():
-            await interaction.followup.send(
-                f"Added to queue: **{songs[0].title}** `[{songs[0].fmt_duration()}]`"
-            )
+            await interaction.followup.send(embed=songs[0].queued_embed(len(state.queue)))
         else:
-            await interaction.followup.send(f"Loading **{songs[0].title}**...")
+            embed = discord.Embed(description=f"Loading **{songs[0].title}**\u2026", colour=COLOUR)
+            await interaction.followup.send(embed=embed)
     else:
-        await interaction.followup.send(f"Added **{len(songs)}** songs to the queue.")
+        embed = discord.Embed(
+            title="Playlist Added",
+            description=f"Queued **{len(songs)}** songs.",
+            colour=COLOUR,
+        )
+        await interaction.followup.send(embed=embed)
 
     if not vc.is_playing() and not vc.is_paused():
         play_next(vc, state)
@@ -192,42 +260,58 @@ async def play(interaction: discord.Interaction, query: str):
 async def skip(interaction: discord.Interaction):
     vc: discord.VoiceClient | None = interaction.guild.voice_client
     if vc is None or not (vc.is_playing() or vc.is_paused()):
-        await interaction.response.send_message("Nothing is playing right now.")
+        embed = discord.Embed(description="Nothing is playing right now.", colour=discord.Colour.red())
+        await interaction.response.send_message(embed=embed)
         return
     vc.stop()
-    await interaction.response.send_message("Skipped!")
+    embed = discord.Embed(description="Skipped!", colour=COLOUR)
+    await interaction.response.send_message(embed=embed)
 
 
 @bot.tree.command(name="queue", description="Show the current queue")
 async def queue_cmd(interaction: discord.Interaction):
     state = get_state(interaction.guild_id)
     if not state.current and not state.queue:
-        await interaction.response.send_message("The queue is empty.")
+        embed = discord.Embed(description="The queue is empty.", colour=discord.Colour.red())
+        await interaction.response.send_message(embed=embed)
         return
 
-    lines = []
+    embed = discord.Embed(title="Queue", colour=COLOUR)
+
     if state.current:
-        lines.append(f"**Now playing:** {state.current.title} `[{state.current.fmt_duration()}]`")
+        loop_tag = " \U0001f502" if state.loop_one else (" \U0001f501" if state.loop_queue else "")
+        embed.add_field(
+            name=f"Now Playing{loop_tag}",
+            value=f"{state.current._title_link()} `[{state.current.fmt_duration()}]`",
+            inline=False,
+        )
+        if state.current.thumbnail:
+            embed.set_thumbnail(url=state.current.thumbnail)
 
-    for i, song in enumerate(state.queue, 1):
-        lines.append(f"`{i}.` {song.title} `[{song.fmt_duration()}]` — {song.requester}")
-        if i >= 20:
-            lines.append(f"… and {len(state.queue) - 20} more")
-            break
+    if state.queue:
+        lines = []
+        for i, song in enumerate(state.queue, 1):
+            lines.append(
+                f"`{i}.` {song._title_link()} `[{song.fmt_duration()}]` \u2014 {song.requester}"
+            )
+            if i >= 20:
+                remaining = len(state.queue) - 20
+                if remaining:
+                    lines.append(f"\u2026 and {remaining} more")
+                break
+        embed.add_field(name="Up Next", value="\n".join(lines), inline=False)
 
-    await interaction.response.send_message("\n".join(lines))
+    await interaction.response.send_message(embed=embed)
 
 
 @bot.tree.command(name="nowplaying", description="Show what's currently playing")
 async def nowplaying(interaction: discord.Interaction):
     state = get_state(interaction.guild_id)
     if state.current:
-        await interaction.response.send_message(
-            f"Now playing: **{state.current.title}** `[{state.current.fmt_duration()}]`"
-            f" — requested by {state.current.requester}"
-        )
+        await interaction.response.send_message(embed=state.current.now_playing_embed())
     else:
-        await interaction.response.send_message("Nothing is playing.")
+        embed = discord.Embed(description="Nothing is playing.", colour=discord.Colour.red())
+        await interaction.response.send_message(embed=embed)
 
 
 @bot.tree.command(name="pause", description="Pause playback")
@@ -235,9 +319,11 @@ async def pause(interaction: discord.Interaction):
     vc: discord.VoiceClient | None = interaction.guild.voice_client
     if vc and vc.is_playing():
         vc.pause()
-        await interaction.response.send_message("Paused.")
+        embed = discord.Embed(description="Paused.", colour=COLOUR)
+        await interaction.response.send_message(embed=embed)
     else:
-        await interaction.response.send_message("Nothing is playing.")
+        embed = discord.Embed(description="Nothing is playing.", colour=discord.Colour.red())
+        await interaction.response.send_message(embed=embed)
 
 
 @bot.tree.command(name="resume", description="Resume playback")
@@ -245,9 +331,11 @@ async def resume(interaction: discord.Interaction):
     vc: discord.VoiceClient | None = interaction.guild.voice_client
     if vc and vc.is_paused():
         vc.resume()
-        await interaction.response.send_message("Resumed.")
+        embed = discord.Embed(description="Resumed.", colour=COLOUR)
+        await interaction.response.send_message(embed=embed)
     else:
-        await interaction.response.send_message("Nothing is paused.")
+        embed = discord.Embed(description="Nothing is paused.", colour=discord.Colour.red())
+        await interaction.response.send_message(embed=embed)
 
 
 @bot.tree.command(name="stop", description="Stop playback and disconnect")
@@ -259,7 +347,9 @@ async def stop(interaction: discord.Interaction):
     if vc:
         vc.stop()
         await vc.disconnect()
-    await interaction.response.send_message("Stopped and disconnected.")
+    embed = discord.Embed(description="Stopped and disconnected.", colour=COLOUR)
+    await interaction.response.send_message(embed=embed)
+    await update_presence(None)
 
 
 @bot.tree.command(name="remove", description="Remove a song from the queue by position")
@@ -267,21 +357,25 @@ async def stop(interaction: discord.Interaction):
 async def remove(interaction: discord.Interaction, position: int):
     state = get_state(interaction.guild_id)
     if position < 1 or position > len(state.queue):
-        await interaction.response.send_message(
-            f"Invalid position. Queue has {len(state.queue)} song(s)."
+        embed = discord.Embed(
+            description=f"Invalid position. Queue has {len(state.queue)} song(s).",
+            colour=discord.Colour.red(),
         )
+        await interaction.response.send_message(embed=embed)
         return
     lst = list(state.queue)
     removed = lst.pop(position - 1)
     state.queue = deque(lst)
-    await interaction.response.send_message(f"Removed: **{removed.title}**")
+    embed = discord.Embed(description=f"Removed: **{removed.title}**", colour=COLOUR)
+    await interaction.response.send_message(embed=embed)
 
 
 @bot.tree.command(name="clear", description="Clear the queue without stopping the current song")
 async def clear(interaction: discord.Interaction):
     state = get_state(interaction.guild_id)
     state.queue.clear()
-    await interaction.response.send_message("Queue cleared.")
+    embed = discord.Embed(description="Queue cleared.", colour=COLOUR)
+    await interaction.response.send_message(embed=embed)
 
 
 @bot.tree.command(name="loop", description="Set loop mode")
@@ -296,15 +390,16 @@ async def loop_cmd(interaction: discord.Interaction, mode: str):
     if mode == "one":
         state.loop_one = True
         state.loop_queue = False
-        await interaction.response.send_message("Looping current song.")
+        embed = discord.Embed(description="\U0001f502 Looping current song.", colour=COLOUR)
     elif mode == "queue":
         state.loop_one = False
         state.loop_queue = True
-        await interaction.response.send_message("Looping queue.")
+        embed = discord.Embed(description="\U0001f501 Looping queue.", colour=COLOUR)
     else:
         state.loop_one = False
         state.loop_queue = False
-        await interaction.response.send_message("Loop disabled.")
+        embed = discord.Embed(description="Loop disabled.", colour=COLOUR)
+    await interaction.response.send_message(embed=embed)
 
 
 # ── EVENTS ────────────────────────────────────────────────────────────────────
@@ -315,6 +410,7 @@ GUILD = discord.Object(id=207366864341303296)
 async def on_ready():
     bot.tree.copy_global_to(guild=GUILD)
     await bot.tree.sync(guild=GUILD)
+    await update_presence(None)
     print(f"Logged in as {bot.user} ({bot.user.id})")
     print("Slash commands synced to guild.")
 
@@ -329,6 +425,7 @@ async def on_voice_state_update(member, before, after):
         state.queue.clear()
         state.current = None
         await vc.disconnect()
+        await update_presence(None)
 
 
 # ── ENTRY POINT ───────────────────────────────────────────────────────────────
