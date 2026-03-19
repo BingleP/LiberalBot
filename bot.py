@@ -96,21 +96,27 @@ class Song:
         return f"[{self.title}]({self.webpage_url})" if self.webpage_url else self.title
 
     def now_playing_embed(self) -> discord.Embed:
-        embed = discord.Embed(title="Now Playing", description=self._title_link(), colour=COLOUR)
-        embed.add_field(name="Duration", value=self.fmt_duration(), inline=True)
-        embed.add_field(name="Requested by", value=self.requester, inline=True)
+        embed = discord.Embed(
+            title="\U0001f4e1 LADIES AND GENTLEMEN, WE ARE ON AIR",
+            description=self._title_link(),
+            colour=COLOUR,
+        )
+        embed.add_field(name="Time on Air", value=self.fmt_duration(), inline=True)
+        embed.add_field(name="Patriot on Deck", value=self.requester, inline=True)
+        embed.set_footer(text="The globalists DO NOT want you listening to this.")
         if self.thumbnail:
             embed.set_thumbnail(url=self.thumbnail)
         return embed
 
     def queued_embed(self, position: int) -> discord.Embed:
         embed = discord.Embed(
-            title=f"Added to Queue \u2014 #{position}",
+            title=f"\u26a0\ufe0f LOCKED AND LOADED \u2014 POSITION #{position}",
             description=self._title_link(),
             colour=COLOUR,
         )
-        embed.add_field(name="Duration", value=self.fmt_duration(), inline=True)
-        embed.add_field(name="Requested by", value=self.requester, inline=True)
+        embed.add_field(name="Time on Air", value=self.fmt_duration(), inline=True)
+        embed.add_field(name="Patriot on Deck", value=self.requester, inline=True)
+        embed.set_footer(text="They can't stop the signal.")
         if self.thumbnail:
             embed.set_thumbnail(url=self.thumbnail)
         return embed
@@ -155,7 +161,7 @@ async def update_presence(song: Song | None):
         )
     else:
         await bot.change_presence(
-            activity=discord.Activity(type=discord.ActivityType.listening, name="nothing — use /play"),
+            activity=discord.Activity(type=discord.ActivityType.listening, name="the globalists | /play to resist"),
             status=discord.Status.idle,
         )
 
@@ -176,8 +182,8 @@ def play_next(vc: discord.VoiceClient, state: GuildState, error=None):
     if not state.queue:
         state.current = None
         embed = discord.Embed(
-            title="Queue Finished",
-            description="Nothing left to play. Add more songs with `/play`!",
+            title="\U0001f6a8 THE TRANSMISSION HAS ENDED",
+            description="They finally silenced us\u2026 for now. Use `/play` to take back the airwaves, PATRIOTS!",
             colour=COLOUR,
         )
         asyncio.run_coroutine_threadsafe(state.send(embed=embed), bot.loop)
@@ -196,7 +202,7 @@ def play_next(vc: discord.VoiceClient, state: GuildState, error=None):
 async def ensure_voice(interaction: discord.Interaction) -> discord.VoiceClient | None:
     if interaction.user.voice is None:
         embed = discord.Embed(
-            description="You need to be in a voice channel first.",
+            description="LADIES AND GENTLEMEN, you are NOT in a voice channel! They've locked you out! Get in there and fight back!",
             colour=discord.Colour.red(),
         )
         await interaction.followup.send(embed=embed)
@@ -229,7 +235,7 @@ async def play(interaction: discord.Interaction, query: str):
 
     if not songs:
         embed = discord.Embed(
-            description="Could not find anything for that query.",
+            description="THE GLOBALISTS HAVE SCRUBBED IT! I couldn't find anything for that query \u2014 they don't want you to hear it!",
             colour=discord.Colour.red(),
         )
         await interaction.followup.send(embed=embed)
@@ -242,12 +248,12 @@ async def play(interaction: discord.Interaction, query: str):
         if vc.is_playing() or vc.is_paused():
             await interaction.followup.send(embed=songs[0].queued_embed(len(state.queue)))
         else:
-            embed = discord.Embed(description=f"Loading **{songs[0].title}**\u2026", colour=COLOUR)
+            embed = discord.Embed(description=f"INITIATING BROADCAST\u2026 They can't stop **{songs[0].title}** from reaching your ears!", colour=COLOUR)
             await interaction.followup.send(embed=embed)
     else:
         embed = discord.Embed(
-            title="Playlist Added",
-            description=f"Queued **{len(songs)}** songs.",
+            title="\U0001f3b6 THE DEEP STATE IS SHAKING",
+            description=f"**{len(songs)}** songs locked and loaded in the battle plan! The information war continues!",
             colour=COLOUR,
         )
         await interaction.followup.send(embed=embed)
@@ -260,11 +266,11 @@ async def play(interaction: discord.Interaction, query: str):
 async def skip(interaction: discord.Interaction):
     vc: discord.VoiceClient | None = interaction.guild.voice_client
     if vc is None or not (vc.is_playing() or vc.is_paused()):
-        embed = discord.Embed(description="Nothing is playing right now.", colour=discord.Colour.red())
+        embed = discord.Embed(description="THERE'S NOTHING PLAYING! The globalists have already silenced the feed!", colour=discord.Colour.red())
         await interaction.response.send_message(embed=embed)
         return
     vc.stop()
-    embed = discord.Embed(description="Skipped!", colour=COLOUR)
+    embed = discord.Embed(description="NEXT! The people demand a new transmission \u2014 moving on!", colour=COLOUR)
     await interaction.response.send_message(embed=embed)
 
 
@@ -272,16 +278,16 @@ async def skip(interaction: discord.Interaction):
 async def queue_cmd(interaction: discord.Interaction):
     state = get_state(interaction.guild_id)
     if not state.current and not state.queue:
-        embed = discord.Embed(description="The queue is empty.", colour=discord.Colour.red())
+        embed = discord.Embed(description="THE BATTLE PLAN IS EMPTY! The globalists have won\u2026 for now. Use `/play` to reclaim the airwaves!", colour=discord.Colour.red())
         await interaction.response.send_message(embed=embed)
         return
 
-    embed = discord.Embed(title="Queue", colour=COLOUR)
+    embed = discord.Embed(title="\U0001f4cb THE BATTLE PLAN", colour=COLOUR)
 
     if state.current:
         loop_tag = " \U0001f502" if state.loop_one else (" \U0001f501" if state.loop_queue else "")
         embed.add_field(
-            name=f"Now Playing{loop_tag}",
+            name=f"\U0001f4e1 CURRENTLY ON AIR{loop_tag}",
             value=f"{state.current._title_link()} `[{state.current.fmt_duration()}]`",
             inline=False,
         )
@@ -299,7 +305,7 @@ async def queue_cmd(interaction: discord.Interaction):
                 if remaining:
                     lines.append(f"\u2026 and {remaining} more")
                 break
-        embed.add_field(name="Up Next", value="\n".join(lines), inline=False)
+        embed.add_field(name="\u2694\ufe0f THE RESISTANCE LINEUP", value="\n".join(lines), inline=False)
 
     await interaction.response.send_message(embed=embed)
 
@@ -310,7 +316,7 @@ async def nowplaying(interaction: discord.Interaction):
     if state.current:
         await interaction.response.send_message(embed=state.current.now_playing_embed())
     else:
-        embed = discord.Embed(description="Nothing is playing.", colour=discord.Colour.red())
+        embed = discord.Embed(description="SILENCE! They've cut the feed! Use `/play` to fight back!", colour=discord.Colour.red())
         await interaction.response.send_message(embed=embed)
 
 
@@ -319,10 +325,10 @@ async def pause(interaction: discord.Interaction):
     vc: discord.VoiceClient | None = interaction.guild.voice_client
     if vc and vc.is_playing():
         vc.pause()
-        embed = discord.Embed(description="Paused.", colour=COLOUR)
+        embed = discord.Embed(description="BROADCAST PAUSED! Catching our breath before the next assault on the globalist agenda!", colour=COLOUR)
         await interaction.response.send_message(embed=embed)
     else:
-        embed = discord.Embed(description="Nothing is playing.", colour=discord.Colour.red())
+        embed = discord.Embed(description="THERE'S NOTHING PLAYING! They already silenced us!", colour=discord.Colour.red())
         await interaction.response.send_message(embed=embed)
 
 
@@ -331,10 +337,10 @@ async def resume(interaction: discord.Interaction):
     vc: discord.VoiceClient | None = interaction.guild.voice_client
     if vc and vc.is_paused():
         vc.resume()
-        embed = discord.Embed(description="Resumed.", colour=COLOUR)
+        embed = discord.Embed(description="WE'RE BACK ON AIR! They tried to stop us\u2014 they FAILED!", colour=COLOUR)
         await interaction.response.send_message(embed=embed)
     else:
-        embed = discord.Embed(description="Nothing is paused.", colour=discord.Colour.red())
+        embed = discord.Embed(description="NOTHING IS PAUSED! Full transmission already in progress, folks!", colour=discord.Colour.red())
         await interaction.response.send_message(embed=embed)
 
 
@@ -347,7 +353,7 @@ async def stop(interaction: discord.Interaction):
     if vc:
         vc.stop()
         await vc.disconnect()
-    embed = discord.Embed(description="Stopped and disconnected.", colour=COLOUR)
+    embed = discord.Embed(description="GOING DARK! Disconnecting from the grid\u2014 but we will NEVER stop the fight. 1776 WILL COMMENCE AGAIN!", colour=COLOUR)
     await interaction.response.send_message(embed=embed)
     await update_presence(None)
 
@@ -358,7 +364,7 @@ async def remove(interaction: discord.Interaction, position: int):
     state = get_state(interaction.guild_id)
     if position < 1 or position > len(state.queue):
         embed = discord.Embed(
-            description=f"Invalid position. Queue has {len(state.queue)} song(s).",
+            description=f"THAT POSITION DOESN'T EXIST, FOLKS! The battle plan only has {len(state.queue)} song(s)\u2014 are you being deceived by disinformation?!",
             colour=discord.Colour.red(),
         )
         await interaction.response.send_message(embed=embed)
@@ -366,7 +372,7 @@ async def remove(interaction: discord.Interaction, position: int):
     lst = list(state.queue)
     removed = lst.pop(position - 1)
     state.queue = deque(lst)
-    embed = discord.Embed(description=f"Removed: **{removed.title}**", colour=COLOUR)
+    embed = discord.Embed(description=f"ELIMINATED from the battle plan: **{removed.title}**! Cut it\u2014 we don't need that track in the resistance!", colour=COLOUR)
     await interaction.response.send_message(embed=embed)
 
 
@@ -374,7 +380,7 @@ async def remove(interaction: discord.Interaction, position: int):
 async def clear(interaction: discord.Interaction):
     state = get_state(interaction.guild_id)
     state.queue.clear()
-    embed = discord.Embed(description="Queue cleared.", colour=COLOUR)
+    embed = discord.Embed(description="BATTLE PLAN PURGED! Starting fresh\u2014 like 1776! The resistance rebuilds!", colour=COLOUR)
     await interaction.response.send_message(embed=embed)
 
 
@@ -390,15 +396,15 @@ async def loop_cmd(interaction: discord.Interaction, mode: str):
     if mode == "one":
         state.loop_one = True
         state.loop_queue = False
-        embed = discord.Embed(description="\U0001f502 Looping current song.", colour=COLOUR)
+        embed = discord.Embed(description="\U0001f502 ON REPEAT UNTIL THE TRUTH SETS YOU FREE! They can't make me stop playing this!", colour=COLOUR)
     elif mode == "queue":
         state.loop_one = False
         state.loop_queue = True
-        embed = discord.Embed(description="\U0001f501 Looping queue.", colour=COLOUR)
+        embed = discord.Embed(description="\U0001f501 THE ENTIRE BATTLE PLAN ON LOOP! Endless transmission\u2014 the globalists are HORRIFIED!", colour=COLOUR)
     else:
         state.loop_one = False
         state.loop_queue = False
-        embed = discord.Embed(description="Loop disabled.", colour=COLOUR)
+        embed = discord.Embed(description="Loop protocol DISABLED. Moving forward\u2014 like a true patriot.", colour=COLOUR)
     await interaction.response.send_message(embed=embed)
 
 
