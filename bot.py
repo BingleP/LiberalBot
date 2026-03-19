@@ -10,14 +10,20 @@ FFMPEG_BEFORE_OPTS = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
 FFMPEG_OPTS = {"options": "-vn", "before_options": FFMPEG_BEFORE_OPTS}
 
 YTDL_OPTS = {
-    "format": "bestaudio/best",
+    "format": "bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best",
     "quiet": True,
     "no_warnings": True,
     "default_search": "ytsearch",
-    "noplaylist": False,
+    "noplaylist": True,
     "extract_flat": "in_playlist",
+    "playlistend": 25,
     "source_address": "0.0.0.0",
+    "cookiefile": "/home/bingle/Documents/www.youtube.com_cookies.txt",
+    "extractor_args": {"youtube": {"player_client": ["web", "ios"]}},
+    "remote_components": ["ejs:github"],
 }
+
+YTDL_ENTRY_OPTS = {**YTDL_OPTS, "extract_flat": False, "noplaylist": True}
 
 
 def make_ytdl():
@@ -36,6 +42,7 @@ class Song:
     async def from_query(cls, query: str, requester: str) -> list["Song"]:
         loop = asyncio.get_event_loop()
         ytdl = make_ytdl()
+        entry_ytdl = yt_dlp.YoutubeDL(YTDL_ENTRY_OPTS)
 
         data = await loop.run_in_executor(None, lambda: ytdl.extract_info(query, download=False))
 
@@ -46,7 +53,7 @@ class Song:
                     continue
                 entry = await loop.run_in_executor(
                     None,
-                    lambda e=entry: make_ytdl().extract_info(
+                    lambda e=entry: entry_ytdl.extract_info(
                         e.get("url") or e.get("webpage_url") or e["id"],
                         download=False,
                     ),
