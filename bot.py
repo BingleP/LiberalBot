@@ -1,4 +1,6 @@
 import asyncio
+import subprocess
+import signal
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -7,8 +9,15 @@ from collections import deque
 
 COLOUR = 0x9B59B6  # purple accent
 
+YT_COOKIE_FILE = "/home/bingle/Documents/www.youtube.com_cookies.txt"
+
 # ── FFMPEG OPTIONS ──────────────────────────────────────────────────────────
-FFMPEG_BEFORE_OPTS = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
+FFMPEG_BEFORE_OPTS = (
+    "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
+    ' -user_agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"'
+    ' -headers "Referer: https://www.youtube.com\\r\\n"'
+    f' -cookies "{YT_COOKIE_FILE}"'
+)
 FFMPEG_OPTS = {"options": "-vn", "before_options": FFMPEG_BEFORE_OPTS}
 
 YTDL_OPTS = {
@@ -20,7 +29,7 @@ YTDL_OPTS = {
     "extract_flat": "in_playlist",
     "playlistend": 25,
     "source_address": "0.0.0.0",
-    "cookiefile": "/home/bingle/Documents/www.youtube.com_cookies.txt",
+    "cookiefile": YT_COOKIE_FILE,
     "extractor_args": {"youtube": {"player_client": ["web", "ios"]}},
     "remote_components": ["ejs:github"],
 }
@@ -30,6 +39,74 @@ YTDL_ENTRY_OPTS = {**YTDL_OPTS, "extract_flat": False, "noplaylist": True}
 
 def make_ytdl():
     return yt_dlp.YoutubeDL(YTDL_OPTS)
+
+
+# ── AUDIO SOURCE (yt-dlp ➜ FFmpeg) ──────────────────────────────────────────
+class YTDLSource(discord.AudioSource):
+    def __init__(self, url: str):
+        self.url = url
+        self._process: subprocess.Popen | None = None
+        self._ffmpeg: subprocess.Popen | None = None
+        self._buffer = b""
+
+    def start(self):
+        ytdl_cmd = [
+            "yt-dlp", "-f", "bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best",
+            "-o", "-", "-q", "--no-warnings",
+            "--cookies", YT_COOKIE_FILE,
+            "--extractor-args", "youtube:player_client=web,ios",
+            self.url,
+        ]
+        self._process = subprocess.Popen(ytdl_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+
+        ffmpeg_cmd = [
+            "ffmpeg", "-i", "pipe:0", "-vn",
+            "-f", "s16le", "-ar", "48000", "-ac", "2",
+            "-loglevel", "quiet",
+            "pipe:1",
+        ]
+        self._ffmpeg = subprocess.Popen(
+            ffmpeg_cmd,
+            stdin=self._process.stdout,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        if self._process.stdout:
+            self._process.stdout.close()
+
+    def read(self) -> bytes:
+        if self._ffmpeg is None:
+            self.start()
+        if self._ffmpeg is None or self._ffmpeg.stdout is None:
+            return b""
+
+        target = discord.opus.Encoder.FRAME_SIZE
+        while len(self._buffer) < target:
+            chunk = self._ffmpeg.stdout.read(target - len(self._buffer))
+            if not chunk:
+                break
+            self._buffer += chunk
+
+        if not self._buffer:
+            return b""
+
+        if len(self._buffer) < target:
+            data = self._buffer
+            self._buffer = b""
+            return data
+
+        data = self._buffer[:target]
+        self._buffer = self._buffer[target:]
+        return data
+
+    def is_opus(self) -> bool:
+        return False
+
+    def cleanup(self):
+        for proc in (self._ffmpeg, self._process):
+            if proc and proc.poll() is None:
+                proc.kill()
+                proc.wait()
 
 
 # ── SONG ────────────────────────────────────────────────────────────────────
@@ -84,8 +161,8 @@ class Song:
         webpage_url = entry.get("webpage_url", "")
         return cls(url, title, duration, requester, thumbnail, webpage_url)
 
-    def audio_source(self) -> discord.FFmpegPCMAudio:
-        return discord.FFmpegPCMAudio(self.url, **FFMPEG_OPTS)
+    def audio_source(self) -> YTDLSource:
+        return YTDLSource(self.url)
 
     def fmt_duration(self) -> str:
         m, s = divmod(self.duration, 60)
@@ -167,9 +244,17 @@ async def update_presence(song: Song | None):
 
 
 # ── PLAYBACK ─────────────────────────────────────────────────────────────────
+async def _notify_error(state: GuildState, msg: str):
+    embed = discord.Embed(description=msg, colour=discord.Colour.red())
+    await state.send(embed=embed)
+
 def play_next(vc: discord.VoiceClient, state: GuildState, error=None):
     if error:
         print(f"Playback error: {error}")
+        asyncio.run_coroutine_threadsafe(
+            _notify_error(state, f"THE GLOBALISTS INTERRUPTED THE TRANSMISSION! ({error})"),
+            bot.loop,
+        )
 
     if state.loop_one and state.current:
         source = discord.PCMVolumeTransformer(state.current.audio_source())
@@ -231,7 +316,16 @@ async def play(interaction: discord.Interaction, query: str):
     state = get_state(interaction.guild_id)
     state.set_channel(interaction.channel)
 
-    songs = await Song.from_query(query, interaction.user.display_name)
+    try:
+        songs = await Song.from_query(query, interaction.user.display_name)
+    except Exception as e:
+        print(f"yt-dlp error: {e}")
+        embed = discord.Embed(
+            description=f"THE GLOBALISTS JAMMED THE SIGNAL! YouTube is fighting back\u2014 error: {e}",
+            colour=discord.Colour.red(),
+        )
+        await interaction.followup.send(embed=embed)
+        return
 
     if not songs:
         embed = discord.Embed(
