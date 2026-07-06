@@ -1,9 +1,12 @@
 import asyncio
 import subprocess
 import signal
+import time
+import math
 import discord
 from discord import app_commands
 from discord.ext import commands
+from discord.ui import View, Button, Select
 import yt_dlp
 from collections import deque
 
@@ -39,6 +42,22 @@ YTDL_ENTRY_OPTS = {**YTDL_OPTS, "extract_flat": False, "noplaylist": True}
 
 def make_ytdl():
     return yt_dlp.YoutubeDL(YTDL_OPTS)
+
+
+# ── HELPERS ──────────────────────────────────────────────────────────────────
+def _fmt_seconds(s: int) -> str:
+    m, s = divmod(s, 60)
+    h, m = divmod(m, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+
+def _progress_bar(elapsed: float, duration: int, width: int = 12) -> str:
+    if duration <= 0:
+        return "\U0001f534 LIVE"
+    progress = min(elapsed / duration, 1.0)
+    filled = int(progress * width)
+    bar = "\u2593" * filled + "\u2591" * (width - filled)
+    return f"`{bar}` `{_fmt_seconds(int(elapsed))} / {_fmt_seconds(duration)}`"
 
 
 # ── AUDIO SOURCE (yt-dlp ➜ FFmpeg) ──────────────────────────────────────────
@@ -165,14 +184,12 @@ class Song:
         return YTDLSource(self.url)
 
     def fmt_duration(self) -> str:
-        m, s = divmod(self.duration, 60)
-        h, m = divmod(m, 60)
-        return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+        return _fmt_seconds(self.duration)
 
     def _title_link(self) -> str:
         return f"[{self.title}]({self.webpage_url})" if self.webpage_url else self.title
 
-    def now_playing_embed(self) -> discord.Embed:
+    def now_playing_embed(self, progress: str | None = None) -> discord.Embed:
         embed = discord.Embed(
             title="\U0001f4e1 LADIES AND GENTLEMEN, WE ARE ON AIR",
             description=self._title_link(),
@@ -180,6 +197,8 @@ class Song:
         )
         embed.add_field(name="Time on Air", value=self.fmt_duration(), inline=True)
         embed.add_field(name="Patriot on Deck", value=self.requester, inline=True)
+        if progress:
+            embed.add_field(name="\u23f1\ufe0f Progress", value=progress, inline=False)
         embed.set_footer(text="The globalists DO NOT want you listening to this.")
         if self.thumbnail:
             embed.set_thumbnail(url=self.thumbnail)
@@ -207,6 +226,9 @@ class GuildState:
         self.loop_one: bool = False
         self.loop_queue: bool = False
         self._text_channel: discord.TextChannel | None = None
+        self.now_playing_message: discord.Message | None = None
+        self.song_start_time: float = 0.0
+        self.progress_task: asyncio.Task | None = None
 
     def set_channel(self, channel: discord.TextChannel):
         self._text_channel = channel
@@ -214,6 +236,151 @@ class GuildState:
     async def send(self, embed: discord.Embed | None = None, content: str | None = None):
         if self._text_channel:
             await self._text_channel.send(content=content, embed=embed)
+
+    def cleanup(self):
+        if self.progress_task and not self.progress_task.done():
+            self.progress_task.cancel()
+            self.progress_task = None
+        self.now_playing_message = None
+
+
+# ── VIEWS ────────────────────────────────────────────────────────────────────
+class NowPlayingView(View):
+    def __init__(self, guild_id: int, loop_one: bool, loop_queue: bool):
+        super().__init__(timeout=None)
+        self.guild_id = guild_id
+
+        self._pp = Button(emoji="\u23ef\ufe0f", style=discord.ButtonStyle.secondary, row=0)
+        self._skip = Button(emoji="\u23ed\ufe0f", style=discord.ButtonStyle.secondary, row=0)
+        self._stop = Button(emoji="u23f9\ufe0f", style=discord.ButtonStyle.danger, row=0)
+        self._loop = Button(
+            emoji="\U0001f501" if loop_queue else ("\U0001f502" if loop_one else "\U0001f503"),
+            style=discord.ButtonStyle.primary if (loop_one or loop_queue) else discord.ButtonStyle.secondary,
+            row=0,
+        )
+
+        self._pp.callback = self._play_pause
+        self._skip.callback = self._skip_song
+        self._stop.callback = self._stop_playback
+        self._loop.callback = self._toggle_loop
+
+        self.add_item(self._pp)
+        self.add_item(self._skip)
+        self.add_item(self._stop)
+        self.add_item(self._loop)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        vc = interaction.guild.voice_client
+        if not vc or not vc.channel:
+            await interaction.response.send_message(
+                "The transmission is offline.", ephemeral=True
+            )
+            return False
+        if interaction.user.voice and interaction.user.voice.channel == vc.channel:
+            return True
+        await interaction.response.send_message(
+            "You must be in the same voice channel to control the broadcast!",
+            ephemeral=True,
+        )
+        return False
+
+    async def _play_pause(self, interaction: discord.Interaction):
+        vc = interaction.guild.voice_client
+        if vc.is_playing():
+            vc.pause()
+            self._pp.emoji = "\u25b6\ufe0f"
+        elif vc.is_paused():
+            vc.resume()
+            self._pp.emoji = "\u23ef\ufe0f"
+        await interaction.response.edit_message(view=self)
+
+    async def _skip_song(self, interaction: discord.Interaction):
+        vc = interaction.guild.voice_client
+        if vc:
+            vc.stop()
+        await interaction.response.defer()
+
+    async def _stop_playback(self, interaction: discord.Interaction):
+        state = get_state(interaction.guild_id)
+        state.queue.clear()
+        state.current = None
+        vc = interaction.guild.voice_client
+        if vc:
+            vc.stop()
+            await vc.disconnect()
+        embed = discord.Embed(
+            description="GOING DARK! Disconnecting from the grid\u2014 but we will NEVER stop the fight. 1776 WILL COMMENCE AGAIN!",
+            colour=COLOUR,
+        )
+        await interaction.response.edit_message(embed=embed, view=None)
+
+    async def _toggle_loop(self, interaction: discord.Interaction):
+        state = get_state(interaction.guild_id)
+        if state.loop_one:
+            state.loop_one = False
+            state.loop_queue = True
+            self._loop.emoji = "\U0001f501"
+            self._loop.style = discord.ButtonStyle.primary
+        elif state.loop_queue:
+            state.loop_queue = False
+            self._loop.emoji = "\U0001f503"
+            self._loop.style = discord.ButtonStyle.secondary
+        else:
+            state.loop_one = True
+            self._loop.emoji = "\U0001f502"
+            self._loop.style = discord.ButtonStyle.primary
+        await interaction.response.edit_message(view=self)
+
+
+class SearchSelect(Select):
+    def __init__(self, songs: list[Song], guild_id: int):
+        self._guild_id = guild_id
+        self._songs = songs
+        options = []
+        for i, s in enumerate(songs[:10]):
+            label = s.title[:60] if s.title else "Unknown"
+            desc = f"{s.requester} | {s.fmt_duration()}"[:50] if s.duration else s.requester[:50]
+            options.append(
+                discord.SelectOption(label=label, description=desc, value=str(i))
+            )
+        super().__init__(
+            placeholder="Choose a track for the resistance\u2026",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        idx = int(self.values[0])
+        song = self._songs[idx]
+        state = get_state(self._guild_id)
+        state.set_channel(interaction.channel)
+        state.queue.append(song)
+
+        vc = interaction.guild.voice_client
+        if vc is None:
+            if interaction.user.voice:
+                vc = await interaction.user.voice.channel.connect()
+
+        embed = song.queued_embed(len(state.queue))
+        await interaction.response.edit_message(
+            content=f"**{song.title}** added to the battle plan!",
+            embed=embed,
+            view=None,
+        )
+
+        if vc and not vc.is_playing() and not vc.is_paused():
+            play_next(vc, state)
+
+
+class SearchPickerView(View):
+    def __init__(self, songs: list[Song], guild_id: int):
+        super().__init__(timeout=60)
+        self.add_item(SearchSelect(songs, guild_id))
+
+    async def on_timeout(self):
+        for child in self.children:
+            child.disabled = True
 
 
 # ── BOT ──────────────────────────────────────────────────────────────────────
@@ -243,6 +410,35 @@ async def update_presence(song: Song | None):
         )
 
 
+# ── PROGRESS BAR LOOP ────────────────────────────────────────────────────────
+async def _progress_loop(guild_id: int):
+    state = get_state(guild_id)
+    try:
+        while state.current and state.now_playing_message:
+            await asyncio.sleep(5)
+            if not state.current or not state.now_playing_message:
+                break
+            elapsed = time.time() - state.song_start_time
+            bar = _progress_bar(elapsed, state.current.duration)
+            embed = state.current.now_playing_embed(progress=bar)
+            view = NowPlayingView(guild_id, state.loop_one, state.loop_queue)
+            try:
+                await state.now_playing_message.edit(embed=embed, view=view)
+            except (discord.NotFound, discord.Forbidden):
+                break
+    except asyncio.CancelledError:
+        pass
+    finally:
+        state.progress_task = None
+
+
+def _start_progress(guild_id: int):
+    state = get_state(guild_id)
+    if state.progress_task and not state.progress_task.done():
+        state.progress_task.cancel()
+    state.progress_task = asyncio.create_task(_progress_loop(guild_id))
+
+
 # ── PLAYBACK ─────────────────────────────────────────────────────────────────
 async def _notify_error(state: GuildState, msg: str):
     embed = discord.Embed(description=msg, colour=discord.Colour.red())
@@ -266,6 +462,7 @@ def play_next(vc: discord.VoiceClient, state: GuildState, error=None):
 
     if not state.queue:
         state.current = None
+        state.cleanup()
         embed = discord.Embed(
             title="\U0001f6a8 THE TRANSMISSION HAS ENDED",
             description="They finally silenced us\u2026 for now. Use `/play` to take back the airwaves, PATRIOTS!",
@@ -277,11 +474,32 @@ def play_next(vc: discord.VoiceClient, state: GuildState, error=None):
 
     song = state.queue.popleft()
     state.current = song
+    state.song_start_time = time.time()
     source = discord.PCMVolumeTransformer(song.audio_source())
     vc.play(source, after=lambda e: play_next(vc, state, e))
 
-    asyncio.run_coroutine_threadsafe(state.send(embed=song.now_playing_embed()), bot.loop)
+    embed = song.now_playing_embed()
+    view = NowPlayingView(vc.guild.id, state.loop_one, state.loop_queue)
+    asyncio.run_coroutine_threadsafe(
+        _send_now_playing(state, embed, view, vc.guild.id),
+        bot.loop,
+    )
     asyncio.run_coroutine_threadsafe(update_presence(song), bot.loop)
+
+
+async def _send_now_playing(
+    state: GuildState, embed: discord.Embed, view: NowPlayingView, guild_id: int
+):
+    if state.now_playing_message:
+        try:
+            await state.now_playing_message.delete()
+        except (discord.NotFound, discord.Forbidden):
+            pass
+        state.now_playing_message = None
+    msg = await state.send(embed=embed)
+    if msg:
+        state.now_playing_message = msg
+        _start_progress(guild_id)
 
 
 async def ensure_voice(interaction: discord.Interaction) -> discord.VoiceClient | None:
@@ -301,6 +519,10 @@ async def ensure_voice(interaction: discord.Interaction) -> discord.VoiceClient 
         await vc.move_to(interaction.user.voice.channel)
 
     return vc
+
+
+def _is_url(query: str) -> bool:
+    return query.startswith("http://") or query.startswith("https://")
 
 
 # ── SLASH COMMANDS ────────────────────────────────────────────────────────────
@@ -335,6 +557,16 @@ async def play(interaction: discord.Interaction, query: str):
         await interaction.followup.send(embed=embed)
         return
 
+    if not _is_url(query) and len(songs) > 1:
+        view = SearchPickerView(songs, interaction.guild_id)
+        embed = discord.Embed(
+            title="\U0001f50d SEARCH RESULTS",
+            description=f"Found **{len(songs)}** potential transmissions. Pick your weapon:",
+            colour=COLOUR,
+        )
+        await interaction.followup.send(embed=embed, view=view)
+        return
+
     for song in songs:
         state.queue.append(song)
 
@@ -342,7 +574,10 @@ async def play(interaction: discord.Interaction, query: str):
         if vc.is_playing() or vc.is_paused():
             await interaction.followup.send(embed=songs[0].queued_embed(len(state.queue)))
         else:
-            embed = discord.Embed(description=f"INITIATING BROADCAST\u2026 They can't stop **{songs[0].title}** from reaching your ears!", colour=COLOUR)
+            embed = discord.Embed(
+                description=f"INITIATING BROADCAST\u2026 They can't stop **{songs[0].title}** from reaching your ears!",
+                colour=COLOUR,
+            )
             await interaction.followup.send(embed=embed)
     else:
         embed = discord.Embed(
@@ -408,7 +643,11 @@ async def queue_cmd(interaction: discord.Interaction):
 async def nowplaying(interaction: discord.Interaction):
     state = get_state(interaction.guild_id)
     if state.current:
-        await interaction.response.send_message(embed=state.current.now_playing_embed())
+        elapsed = time.time() - state.song_start_time
+        bar = _progress_bar(elapsed, state.current.duration) if state.current.duration else None
+        embed = state.current.now_playing_embed(progress=bar)
+        view = NowPlayingView(interaction.guild_id, state.loop_one, state.loop_queue)
+        await interaction.response.send_message(embed=embed, view=view)
     else:
         embed = discord.Embed(description="SILENCE! They've cut the feed! Use `/play` to fight back!", colour=discord.Colour.red())
         await interaction.response.send_message(embed=embed)
@@ -441,6 +680,7 @@ async def resume(interaction: discord.Interaction):
 @bot.tree.command(name="stop", description="Stop playback and disconnect")
 async def stop(interaction: discord.Interaction):
     state = get_state(interaction.guild_id)
+    state.cleanup()
     state.queue.clear()
     state.current = None
     vc: discord.VoiceClient | None = interaction.guild.voice_client
@@ -522,6 +762,7 @@ async def on_voice_state_update(member, before, after):
     vc: discord.VoiceClient | None = member.guild.voice_client
     if vc and len(vc.channel.members) == 1:
         state = get_state(member.guild.id)
+        state.cleanup()
         state.queue.clear()
         state.current = None
         await vc.disconnect()
