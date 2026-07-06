@@ -252,7 +252,7 @@ class NowPlayingView(View):
 
         self._pp = Button(emoji="\u23ef\ufe0f", style=discord.ButtonStyle.secondary, row=0)
         self._skip = Button(emoji="\u23ed\ufe0f", style=discord.ButtonStyle.secondary, row=0)
-        self._stop = Button(emoji="u23f9\ufe0f", style=discord.ButtonStyle.danger, row=0)
+        self._stop = Button(emoji="\u23f9\ufe0f", style=discord.ButtonStyle.danger, row=0)
         self._loop = Button(
             emoji="\U0001f501" if loop_queue else ("\U0001f502" if loop_one else "\U0001f503"),
             style=discord.ButtonStyle.primary if (loop_one or loop_queue) else discord.ButtonStyle.secondary,
