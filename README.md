@@ -5,9 +5,9 @@ A Discord music bot that plays audio from YouTube into voice channels using slas
 ## Features
 
 | Command | Description |
-|---|---|
+|---|---|---|
 | `/play <query>` | Play a song by name, YouTube URL, or playlist URL |
-| `/skip` | Skip the current song |
+| `/skip` | Skip the current song (also works if the current song failed to play) |
 | `/queue` | Show the current queue (up to 20 entries) |
 | `/nowplaying` | Show what's currently playing |
 | `/pause` | Pause playback |
@@ -16,8 +16,30 @@ A Discord music bot that plays audio from YouTube into voice channels using slas
 | `/remove <position>` | Remove a song from the queue by position |
 | `/clear` | Clear the queue without stopping the current song |
 | `/loop <mode>` | Set loop mode: `one` (current song), `queue` (whole queue), or `off` |
+| `/retry` | Retry playing the current song if it failed |
 
 **Auto-disconnect:** The bot will automatically leave the voice channel if it's left alone.
+
+## Error Handling
+
+When a song fails to play, the bot automatically retries up to 3 times with exponential backoff (1s, 2s, 4s) before giving up. Retryable errors include network timeouts and stream failures.
+
+After all retries are exhausted, the bot stops playback and shows a specific error message explaining what went wrong:
+
+| Error | Message |
+|---|---|
+| Video unavailable | Song is no longer available on YouTube |
+| Region-locked | Song isn't available in your region |
+| Age-restricted | Video is age-restricted and cannot be played |
+| Auth failure | YouTube cookies need to be refreshed |
+| Format error | No playable audio format available |
+| Network error | Connection issue detected |
+
+After a final failure, use `/retry` to try the same song again or `/skip` to move to the next track.
+
+## Logging
+
+All errors and retry attempts are logged to `bot.log` with automatic rotation (10MB max, 5 backups). Use the log to diagnose persistent playback issues.
 
 ## Requirements
 

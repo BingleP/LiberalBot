@@ -9,6 +9,9 @@ from discord.ext import commands
 from discord.ui import View, Button, Select
 import yt_dlp
 from collections import deque
+import logging
+from enum import Enum
+from logging.handlers import RotatingFileHandler
 
 COLOUR = 0x9B59B6  # purple accent
 
@@ -39,6 +42,12 @@ YTDL_OPTS = {
 
 YTDL_ENTRY_OPTS = {**YTDL_OPTS, "extract_flat": False, "noplaylist": True}
 
+logger = logging.getLogger("liberalbot")
+logger.setLevel(logging.INFO)
+_handler = RotatingFileHandler("bot.log", maxBytes=10 * 1024 * 1024, backupCount=5)
+_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+logger.addHandler(_handler)
+
 
 def make_ytdl():
     return yt_dlp.YoutubeDL(YTDL_OPTS)
@@ -60,6 +69,57 @@ def _progress_bar(elapsed: float, duration: int, width: int = 12) -> str:
     return f"`{bar}` `{_fmt_seconds(int(elapsed))} / {_fmt_seconds(duration)}`"
 
 
+class MediaError(Enum):
+    UNAVAILABLE = "unavailable"
+    REGION_LOCKED = "region_locked"
+    AGE_RESTRICTED = "age_restricted"
+    AUTH_FAILED = "auth_failed"
+    NETWORK_ERROR = "network_error"
+    FORMAT_ERROR = "format_error"
+    STREAM_ERROR = "stream_error"
+    UNKNOWN = "unknown"
+
+
+RETRYABLE_ERRORS = {
+    MediaError.NETWORK_ERROR,
+    MediaError.STREAM_ERROR,
+    MediaError.UNKNOWN,
+}
+
+
+def classify_error(error: Exception) -> MediaError:
+    msg = str(error).lower()
+    if "sign in" in msg or ("age" in msg and "verify" in msg):
+        return MediaError.AGE_RESTRICTED
+    if "unavailable" in msg or "removed" in msg or "deleted" in msg or "video not found" in msg:
+        return MediaError.UNAVAILABLE
+    if "region" in msg or "country" in msg or "blocked" in msg:
+        return MediaError.REGION_LOCKED
+    if "cookie" in msg or "auth" in msg or "http error 401" in msg or "http error 403" in msg:
+        return MediaError.AUTH_FAILED
+    if "timeout" in msg or "connection" in msg or "network" in msg or "eof" in msg or "empty" in msg:
+        return MediaError.NETWORK_ERROR
+    if "format" in msg or "no suitable" in msg or "no compatible" in msg:
+        return MediaError.FORMAT_ERROR
+    if "exit code" in msg or "process" in msg or "audio source" in msg:
+        return MediaError.STREAM_ERROR
+    return MediaError.UNKNOWN
+
+
+def _user_friendly_error(err_type: MediaError, title: str, detail: str = "") -> str:
+    messages = {
+        MediaError.UNAVAILABLE: f"**{title}** is no longer available on YouTube. Try a different track with `/play`.",
+        MediaError.REGION_LOCKED: f"**{title}** isn't available in your region. Try a different song.",
+        MediaError.AGE_RESTRICTED: f"**{title}** is age-restricted and cannot be played by the bot.",
+        MediaError.AUTH_FAILED: f"Failed to authenticate with YouTube for **{title}**. The bot admin needs to refresh cookies.",
+        MediaError.FORMAT_ERROR: f"No playable audio format found for **{title}**. Try a different song.",
+        MediaError.STREAM_ERROR: f"Failed to stream **{title}**.",
+        MediaError.NETWORK_ERROR: f"Network error while loading **{title}**. Check the connection and try again.",
+        MediaError.UNKNOWN: f"Failed to play **{title}**. {detail}" if detail else f"Failed to play **{title}**.",
+    }
+    return messages.get(err_type, messages[MediaError.UNKNOWN])
+
+
 # ── AUDIO SOURCE (yt-dlp ➜ FFmpeg) ──────────────────────────────────────────
 class YTDLSource(discord.AudioSource):
     def __init__(self, url: str):
@@ -67,6 +127,7 @@ class YTDLSource(discord.AudioSource):
         self._process: subprocess.Popen | None = None
         self._ffmpeg: subprocess.Popen | None = None
         self._buffer = b""
+        self._started = False
 
     def start(self):
         ytdl_cmd = [
@@ -92,9 +153,10 @@ class YTDLSource(discord.AudioSource):
         )
         if self._process.stdout:
             self._process.stdout.close()
+        self._started = True
 
     def read(self) -> bytes:
-        if self._ffmpeg is None:
+        if not self._started:
             self.start()
         if self._ffmpeg is None or self._ffmpeg.stdout is None:
             return b""
@@ -107,6 +169,13 @@ class YTDLSource(discord.AudioSource):
             self._buffer += chunk
 
         if not self._buffer:
+            reasons = []
+            if self._process and self._process.poll() is not None and self._process.returncode != 0:
+                reasons.append(f"yt-dlp (exit {self._process.returncode})")
+            if self._ffmpeg and self._ffmpeg.poll() is not None and self._ffmpeg.returncode != 0:
+                reasons.append(f"ffmpeg (exit {self._ffmpeg.returncode})")
+            if reasons:
+                raise RuntimeError("Audio source failed: " + "; ".join(reasons))
             return b""
 
         if len(self._buffer) < target:
@@ -145,6 +214,9 @@ class Song:
         self.requester = requester
         self.thumbnail = thumbnail
         self.webpage_url = webpage_url
+        self.retry_count = 0
+        self.max_retries = 3
+        self.last_error: MediaError | None = None
 
     @classmethod
     async def from_query(cls, query: str, requester: str) -> list["Song"]:
@@ -446,11 +518,54 @@ async def _notify_error(state: GuildState, msg: str):
 
 def play_next(vc: discord.VoiceClient, state: GuildState, error=None):
     if error:
-        print(f"Playback error: {error}")
+        title = state.current.title if state.current else "Unknown"
+        logger.error(f"Playback error for '{title}': {error}")
+        media_error = classify_error(error)
+
+        if state.current:
+            state.current.last_error = media_error
+
+        if (
+            state.current
+            and state.current.retry_count < state.current.max_retries
+            and media_error in RETRYABLE_ERRORS
+        ):
+            state.current.retry_count += 1
+            attempt = state.current.retry_count + 1
+            logger.info(f"Retrying '{title}' (attempt {attempt}/{state.current.max_retries + 1}): {media_error.value}")
+
+            asyncio.run_coroutine_threadsafe(
+                _notify_error(
+                    state,
+                    f"\u26a0\ufe0f Loading **{title}** failed, retrying... (attempt {attempt}/{state.current.max_retries + 1})",
+                ),
+                bot.loop,
+            )
+
+            backoff = 2 ** (state.current.retry_count - 1)
+            time.sleep(backoff)
+
+            source = discord.PCMVolumeTransformer(state.current.audio_source())
+            vc.play(source, after=lambda e: play_next(vc, state, e))
+            return
+
+        if state.current:
+            msg = _user_friendly_error(media_error, title, str(error))
+            logger.error(f"Final failure for '{title}': {media_error.value}")
+        else:
+            msg = f"THE GLOBALISTS INTERRUPTED THE TRANSMISSION! ({error})"
+
         asyncio.run_coroutine_threadsafe(
-            _notify_error(state, f"THE GLOBALISTS INTERRUPTED THE TRANSMISSION! ({error})"),
+            _notify_error(state, msg),
             bot.loop,
         )
+        asyncio.run_coroutine_threadsafe(update_presence(None), bot.loop)
+        state.cleanup()
+        return
+
+    if state.current:
+        state.current.retry_count = 0
+        state.current.last_error = None
 
     if state.loop_one and state.current:
         source = discord.PCMVolumeTransformer(state.current.audio_source())
@@ -541,7 +656,7 @@ async def play(interaction: discord.Interaction, query: str):
     try:
         songs = await Song.from_query(query, interaction.user.display_name)
     except Exception as e:
-        print(f"yt-dlp error: {e}")
+        logger.error(f"yt-dlp error: {e}")
         embed = discord.Embed(
             description=f"THE GLOBALISTS JAMMED THE SIGNAL! YouTube is fighting back\u2014 error: {e}",
             colour=discord.Colour.red(),
@@ -593,14 +708,41 @@ async def play(interaction: discord.Interaction, query: str):
 
 @bot.tree.command(name="skip", description="Skip the current song")
 async def skip(interaction: discord.Interaction):
+    await interaction.response.defer()
     vc: discord.VoiceClient | None = interaction.guild.voice_client
-    if vc is None or not (vc.is_playing() or vc.is_paused()):
-        embed = discord.Embed(description="THERE'S NOTHING PLAYING! The globalists have already silenced the feed!", colour=discord.Colour.red())
-        await interaction.response.send_message(embed=embed)
+    state = get_state(interaction.guild_id)
+
+    if vc and (vc.is_playing() or vc.is_paused()):
+        vc.stop()
+        embed = discord.Embed(description="NEXT! The people demand a new transmission \u2014 moving on!", colour=COLOUR)
+        await interaction.followup.send(embed=embed)
         return
-    vc.stop()
-    embed = discord.Embed(description="NEXT! The people demand a new transmission \u2014 moving on!", colour=COLOUR)
-    await interaction.response.send_message(embed=embed)
+
+    if state.current and state.queue:
+        state.current.retry_count = 0
+        state.current.last_error = None
+
+        vc = await ensure_voice(interaction)
+        if vc is None:
+            return
+
+        song = state.queue.popleft()
+        state.current = song
+        state.song_start_time = time.time()
+
+        source = discord.PCMVolumeTransformer(song.audio_source())
+        vc.play(source, after=lambda e: play_next(vc, state, e))
+
+        embed = song.now_playing_embed()
+        view = NowPlayingView(interaction.guild_id, state.loop_one, state.loop_queue)
+        await _send_now_playing(state, embed, view, interaction.guild_id)
+        await update_presence(song)
+        embed = discord.Embed(description="NEXT! The people demand a new transmission \u2014 moving on!", colour=COLOUR)
+        await interaction.followup.send(embed=embed)
+        return
+
+    embed = discord.Embed(description="THERE'S NOTHING PLAYING! The globalists have already silenced the feed!", colour=discord.Colour.red())
+    await interaction.followup.send(embed=embed)
 
 
 @bot.tree.command(name="queue", description="Show the current queue")
@@ -740,6 +882,56 @@ async def loop_cmd(interaction: discord.Interaction, mode: str):
         state.loop_queue = False
         embed = discord.Embed(description="Loop protocol DISABLED. Moving forward\u2014 like a true patriot.", colour=COLOUR)
     await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="retry", description="Retry playing the current song if it failed")
+async def retry(interaction: discord.Interaction):
+    state = get_state(interaction.guild_id)
+    vc: discord.VoiceClient | None = interaction.guild.voice_client
+
+    if not state.current:
+        embed = discord.Embed(
+            description="There's no song to retry. Use `/play` to start the resistance!",
+            colour=discord.Colour.red(),
+        )
+        await interaction.response.send_message(embed=embed)
+        return
+
+    if vc and (vc.is_playing() or vc.is_paused()):
+        embed = discord.Embed(
+            description="A song is already playing! Use `/skip` first if you want to retry it.",
+            colour=discord.Colour.red(),
+        )
+        await interaction.response.send_message(embed=embed)
+        return
+
+    if not vc or not vc.is_connected():
+        if interaction.user.voice:
+            vc = await interaction.user.voice.channel.connect()
+        else:
+            embed = discord.Embed(
+                description="You must be in a voice channel to retry the transmission!",
+                colour=discord.Colour.red(),
+            )
+            await interaction.response.send_message(embed=embed)
+            return
+
+    state.current.retry_count = 0
+    state.current.last_error = None
+    state.song_start_time = time.time()
+
+    embed = discord.Embed(
+        description=f"\U0001f504 Retrying **{state.current.title}**... The resistance doesn't give up!",
+        colour=COLOUR,
+    )
+    await interaction.response.send_message(embed=embed)
+
+    source = discord.PCMVolumeTransformer(state.current.audio_source())
+    vc.play(source, after=lambda e: play_next(vc, state, e))
+
+    np_embed = state.current.now_playing_embed()
+    view = NowPlayingView(interaction.guild_id, state.loop_one, state.loop_queue)
+    await _send_now_playing(state, np_embed, view, interaction.guild_id)
 
 
 # ── EVENTS ────────────────────────────────────────────────────────────────────
