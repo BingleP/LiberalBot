@@ -1,7 +1,20 @@
+import os
 import subprocess
+import sys
+
 import discord
 
 from config import YT_COOKIE_FILE
+
+
+def _venv_binary(name: str) -> str:
+    """Resolve a binary inside the active virtual environment, falling back to PATH."""
+    candidate = os.path.join(sys.prefix, "bin", name)
+    return candidate if os.path.isfile(candidate) else name
+
+
+YTDL_BINARY = _venv_binary("yt-dlp")
+FFMPEG_BINARY = _venv_binary("ffmpeg")
 
 
 class YTDLSource(discord.AudioSource):
@@ -14,7 +27,7 @@ class YTDLSource(discord.AudioSource):
 
     def start(self):
         ytdl_cmd = [
-            "yt-dlp", "-f", "bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best",
+            YTDL_BINARY, "-f", "bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best",
             "-o", "-", "-q", "--no-warnings",
             "--cookies", YT_COOKIE_FILE,
             "--extractor-args", "youtube:player_client=web,ios",
@@ -23,7 +36,7 @@ class YTDLSource(discord.AudioSource):
         self._process = subprocess.Popen(ytdl_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
 
         ffmpeg_cmd = [
-            "ffmpeg", "-i", "pipe:0", "-vn",
+            FFMPEG_BINARY, "-i", "pipe:0", "-vn",
             "-f", "s16le", "-ar", "48000", "-ac", "2",
             "-loglevel", "quiet",
             "pipe:1",
