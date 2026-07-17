@@ -70,6 +70,7 @@ def play_next(vc: discord.VoiceClient, state: GuildState, error=None):
         state.current.last_error = None
 
     if state.loop_one and state.current:
+        state.is_paused = False
         source = discord.PCMVolumeTransformer(state.current.audio_source())
         vc.play(source, after=lambda e: play_next(vc, state, e))
         return
@@ -91,12 +92,13 @@ def play_next(vc: discord.VoiceClient, state: GuildState, error=None):
 
     song = state.queue.popleft()
     state.current = song
+    state.is_paused = False
     state.song_start_time = time.time()
     source = discord.PCMVolumeTransformer(song.audio_source())
     vc.play(source, after=lambda e: play_next(vc, state, e))
 
     embed = song.now_playing_embed()
-    view = NowPlayingView(vc.guild.id, state.loop_one, state.loop_queue)
+    view = NowPlayingView(vc.guild.id, state.loop_one, state.loop_queue, state.is_paused)
     _run(_send_now_playing(state, embed, view, vc.guild.id))
     _run(_update_presence(song))
 
@@ -126,7 +128,7 @@ async def _progress_loop(guild_id: int):
             elapsed = time.time() - state.song_start_time
             bar = progress_bar(elapsed, state.current.duration)
             embed = state.current.now_playing_embed(progress=bar)
-            view = NowPlayingView(guild_id, state.loop_one, state.loop_queue)
+            view = NowPlayingView(guild_id, state.loop_one, state.loop_queue, state.is_paused)
             try:
                 await state.now_playing_message.edit(embed=embed, view=view)
             except (discord.NotFound, discord.Forbidden):

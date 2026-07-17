@@ -163,13 +163,14 @@ def register_commands(bot: Bot):
 
             song = state.queue.popleft()
             state.current = song
+            state.is_paused = False
             state.song_start_time = time()
 
             source = discord.PCMVolumeTransformer(song.audio_source())
             vc.play(source, after=lambda e: play_next(vc, state, e))
 
             embed = song.now_playing_embed()
-            view = NowPlayingView(interaction.guild_id, state.loop_one, state.loop_queue)
+            view = NowPlayingView(interaction.guild_id, state.loop_one, state.loop_queue, state.is_paused)
             await _send_now_playing(state, embed, view, interaction.guild_id)
             await update_presence(song)
             embed = discord.Embed(description=say("skipped"), colour=COLOUR)
@@ -204,6 +205,7 @@ def register_commands(bot: Bot):
 
         song = state.queue.popleft()
         state.current = song
+        state.is_paused = False
         state.song_start_time = time()
 
         if vc.is_playing() or vc.is_paused():
@@ -213,7 +215,7 @@ def register_commands(bot: Bot):
         vc.play(source, after=lambda e: play_next(vc, state, e))
 
         embed = song.now_playing_embed()
-        view = NowPlayingView(interaction.guild_id, state.loop_one, state.loop_queue)
+        view = NowPlayingView(interaction.guild_id, state.loop_one, state.loop_queue, state.is_paused)
         await _send_now_playing(state, embed, view, interaction.guild_id)
         await update_presence(song)
 
@@ -268,7 +270,7 @@ def register_commands(bot: Bot):
             elapsed = time() - state.song_start_time
             bar = progress_bar(elapsed, state.current.duration) if state.current.duration else None
             embed = state.current.now_playing_embed(progress=bar)
-            view = NowPlayingView(interaction.guild_id, state.loop_one, state.loop_queue)
+            view = NowPlayingView(interaction.guild_id, state.loop_one, state.loop_queue, state.is_paused)
             await interaction.response.send_message(embed=embed, view=view)
         else:
             embed = discord.Embed(description=say("nothing_playing"), colour=discord.Colour.red())
@@ -276,9 +278,11 @@ def register_commands(bot: Bot):
 
     @bot.tree.command(name="pause", description="Pause playback")
     async def pause(interaction: discord.Interaction):
+        state = get_state(interaction.guild_id)
         vc: discord.VoiceClient | None = interaction.guild.voice_client
         if vc and vc.is_playing():
             vc.pause()
+            state.is_paused = True
             embed = discord.Embed(description=say("paused"), colour=COLOUR)
             await interaction.response.send_message(embed=embed)
         else:
@@ -287,9 +291,11 @@ def register_commands(bot: Bot):
 
     @bot.tree.command(name="resume", description="Resume playback")
     async def resume(interaction: discord.Interaction):
+        state = get_state(interaction.guild_id)
         vc: discord.VoiceClient | None = interaction.guild.voice_client
         if vc and vc.is_paused():
             vc.resume()
+            state.is_paused = False
             embed = discord.Embed(description=say("resumed"), colour=COLOUR)
             await interaction.response.send_message(embed=embed)
         else:
@@ -410,6 +416,7 @@ def register_commands(bot: Bot):
 
         state.current.retry_count = 0
         state.current.last_error = None
+        state.is_paused = False
         state.song_start_time = time()
 
         embed = discord.Embed(
@@ -422,7 +429,7 @@ def register_commands(bot: Bot):
         vc.play(source, after=lambda e: play_next(vc, state, e))
 
         np_embed = state.current.now_playing_embed()
-        view = NowPlayingView(interaction.guild_id, state.loop_one, state.loop_queue)
+        view = NowPlayingView(interaction.guild_id, state.loop_one, state.loop_queue, state.is_paused)
         await _send_now_playing(state, np_embed, view, interaction.guild_id)
 
     @bot.tree.command(name="help", description="Show the command list")

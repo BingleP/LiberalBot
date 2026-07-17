@@ -10,11 +10,15 @@ from state import get_state
 
 
 class NowPlayingView(View):
-    def __init__(self, guild_id: int, loop_one: bool, loop_queue: bool):
+    def __init__(self, guild_id: int, loop_one: bool, loop_queue: bool, is_paused: bool = False):
         super().__init__(timeout=None)
         self.guild_id = guild_id
 
-        self._pp = Button(emoji="\u23ef\ufe0f", style=discord.ButtonStyle.secondary, row=0)
+        self._pp = Button(
+            emoji="\u25b6\ufe0f" if is_paused else "\u23ef\ufe0f",
+            style=discord.ButtonStyle.secondary,
+            row=0,
+        )
         self._skip = Button(emoji="\u23ed\ufe0f", style=discord.ButtonStyle.secondary, row=0)
         self._stop = Button(emoji="\u23f9\ufe0f", style=discord.ButtonStyle.danger, row=0)
         self._loop = Button(
@@ -51,12 +55,15 @@ class NowPlayingView(View):
         return False
 
     async def _play_pause(self, interaction: discord.Interaction):
+        state = get_state(self.guild_id)
         vc = interaction.guild.voice_client
         if vc.is_playing():
             vc.pause()
+            state.is_paused = True
             self._pp.emoji = "\u25b6\ufe0f"
         elif vc.is_paused():
             vc.resume()
+            state.is_paused = False
             self._pp.emoji = "\u23ef\ufe0f"
         await interaction.response.edit_message(view=self)
 

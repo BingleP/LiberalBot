@@ -15,6 +15,7 @@ class GuildState:
         self.current = None
         self.loop_one: bool = False
         self.loop_queue: bool = False
+        self.is_paused: bool = False
         self._text_channel: discord.TextChannel | None = None
         self.now_playing_message: discord.Message | None = None
         self.song_start_time: float = 0.0
