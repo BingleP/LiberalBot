@@ -6,7 +6,8 @@ import discord
 from config import COLOUR, logger
 from errors import classify_error, RETRYABLE_ERRORS, user_friendly_error
 from persona import say
-from state import GuildState, get_state, bot as bot_ref, bot_loop
+import state as state_module
+from state import GuildState, get_state
 from utils import progress_bar
 from views import NowPlayingView
 
@@ -17,7 +18,7 @@ async def _notify_error(state: GuildState, msg: str):
 
 
 def _run(coro):
-    loop = bot_loop or (bot_ref.loop if bot_ref else None) or asyncio.get_event_loop()
+    loop = state_module.bot_loop or (state_module.bot.loop if state_module.bot else None) or asyncio.get_event_loop()
     return asyncio.run_coroutine_threadsafe(coro, loop)
 
 
@@ -144,15 +145,15 @@ def _start_progress(guild_id: int):
 
 
 async def _update_presence(song):
-    if not bot_ref:
+    if not state_module.bot:
         return
     if song:
-        await bot_ref.change_presence(
+        await state_module.bot.change_presence(
             activity=discord.Activity(type=discord.ActivityType.listening, name=song.title),
             status=discord.Status.online,
         )
     else:
-        await bot_ref.change_presence(
+        await state_module.bot.change_presence(
             activity=discord.Activity(type=discord.ActivityType.listening, name="the globalists | /play to resist"),
             status=discord.Status.idle,
         )
