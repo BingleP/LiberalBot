@@ -14,7 +14,16 @@ from views import NowPlayingView
 
 async def _notify_error(state: GuildState, msg: str):
     embed = discord.Embed(description=msg, colour=discord.Colour.red())
-    await state.send(embed=embed)
+    state.last_error_message = await state.send(embed=embed)
+
+
+async def _clear_error_message(state: GuildState):
+    if state.last_error_message:
+        try:
+            await state.last_error_message.delete()
+        except (discord.NotFound, discord.Forbidden):
+            pass
+        state.last_error_message = None
 
 
 def _run(coro):
@@ -68,6 +77,8 @@ def play_next(vc: discord.VoiceClient, state: GuildState, error=None):
     if state.current:
         state.current.retry_count = 0
         state.current.last_error = None
+
+    _run(_clear_error_message(state))
 
     if state.loop_one and state.current:
         state.is_paused = False

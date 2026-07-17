@@ -18,6 +18,7 @@ class GuildState:
         self.is_paused: bool = False
         self._text_channel: discord.TextChannel | None = None
         self.now_playing_message: discord.Message | None = None
+        self.last_error_message: discord.Message | None = None
         self.song_start_time: float = 0.0
         self.progress_task: asyncio.Task | None = None
 
@@ -26,13 +27,15 @@ class GuildState:
 
     async def send(self, embed: discord.Embed | None = None, content: str | None = None):
         if self._text_channel:
-            await self._text_channel.send(content=content, embed=embed)
+            return await self._text_channel.send(content=content, embed=embed)
+        return None
 
     def cleanup(self):
         if self.progress_task and not self.progress_task.done():
             self.progress_task.cancel()
             self.progress_task = None
         self.now_playing_message = None
+        self.last_error_message = None
 
 
 states: dict[int, GuildState] = {}
