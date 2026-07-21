@@ -43,7 +43,7 @@ Only functional control emojis are used. Decorative emojis have been removed fro
 
 ### Error handling
 
-When a song fails to play, the bot automatically retries up to 3 times with exponential backoff (1s, 2s, 4s) before giving up. Retryable errors include network timeouts and stream failures.
+When a song fails to play, the bot automatically retries up to 3 times with exponential backoff (1s, 2s, 4s) before giving up. Retryable errors include network timeouts, stream failures, and expired stream URLs.
 
 After all retries are exhausted, the bot stops playback and shows a specific error message explaining what went wrong:
 
@@ -55,6 +55,7 @@ After all retries are exhausted, the bot stops playback and shows a specific err
 | Auth failure | YouTube cookies need to be refreshed |
 | Format error | No playable audio format available |
 | Network error | Connection issue detected |
+| Expired stream URL | Stream URL expired; bot retries with a fresh one |
 
 After a final failure, use `/retry` to try the same song again or `/skip` to move to the next track.
 
@@ -72,17 +73,59 @@ The bot is split into focused modules:
 | `commands.py` | Slash command handlers |
 | `player.py` | Playback engine, progress loop, voice helpers |
 | `views.py` | Now-playing buttons and search picker |
-| `song.py` | Song model and yt-dlp lookup |
-| `audio.py` | yt-dlp → FFmpeg audio source |
+| `song.py` | Song model, yt-dlp lookup, and stream URL freshness |
+| `audio.py` | FFmpeg audio source for direct YouTube stream URLs |
 | `state.py` | Per-guild playback state |
 | `errors.py` | Media error classification |
 | `persona.py` | Randomized Alex Jones-style response pools |
 | `config.py` | Constants, yt-dlp/FFmpeg options, logging |
 | `utils.py` | Formatting helpers |
 
-## Persona
+### Playback pipeline
 
-Command responses use randomized quotes from `persona.py`. The tone is Alex Jones / InfoWars broadcast energy: globalists, the resistance, transmissions, 1776, etc. The responses are unfiltered for private server use.
+1. `song.py` uses yt-dlp to extract metadata and the best audio stream URL.
+2. The stream URL and HTTP headers are stored on the `Song` object.
+3. `audio.py` plays that URL directly through FFmpeg, without spawning a second yt-dlp process.
+4. If a song sits in the queue longer than 30 minutes, `player.py` automatically re-extracts a fresh stream URL before playback.
+5. On startup, the bot runs a dummy yt-dlp extraction to warm up the EJS challenge solver and avoid first-song race conditions.
+
+## Persona Engine
+
+All user-facing text, embed titles/footers, and idle Discord statuses are drawn from randomized response pools in `persona.py`. The persona tone is Alex Jones / InfoWars broadcast energy: globalists, the resistance, transmissions, 1776, etc.
+
+### Architecture
+
+The engine is built around two simple primitives:
+
+| Component | Description |
+|---|---|
+| `PersonaEvents` | Class of string constants — one per event (e.g. `PersonaEvents.NOW_PLAYING`, `PersonaEvents.QUEUE_EMPTY`) |
+| `PersonaPool` | Dataclass holding a list of template strings, a description, and optional `required_keys` |
+
+Each event constant maps to a `PersonaPool` with 8–15 randomized response templates. The engine picks a random template at call time and fills in any `{placeholders}` at runtime.
+
+### Helper functions
+
+| Function | Purpose |
+|---|---|
+| `say(event, **kwargs)` | Returns a random response string for the given event. Returns empty string if persona is disabled and no neutral fallback exists. |
+| `say_embed(event, **kwargs)` | Returns `(title, description, footer)` tuple for embed chrome. Derives title/footer by appending `_TITLE`/`_FOOTER` to the event name. |
+| `say_status()` | Returns a random `discord.Activity` for idle presence rotation. |
+| `validate_persona()` | Returns a list of warnings if any event template has broken placeholders or if events reference non-existent keys. Called automatically at startup. |
+
+### Configuration
+
+Set `PERSONA_ENABLED = True` or `False` in `config.py`. When disabled, the engine falls back to a `_NEUTRAL` dict of plain descriptions. If a neutral string is not defined for an event, `say()` returns `""` — callers handle empty strings gracefully.
+
+### Adding a new event
+
+1. Add an event constant to `PersonaEvents`, e.g. `NEW_EVENT = "new_event"`
+2. Add a `PersonaPool` entry to `_POOLS` with the same key and a list of template strings
+3. (Optional) Add a `new_event_TITLE` and `new_event_FOOTER` pool if you want embed title/footer support
+4. (Optional) Add a `new_event` entry to `_NEUTRAL` if you want a neutral fallback when persona is off
+5. Call `say(PersonaEvents.NEW_EVENT, ...)` from any module
+
+The engine validates all templates at startup — missing keys in templates will produce a warning in the logs.
 
 ## Logging
 

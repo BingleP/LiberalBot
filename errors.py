@@ -9,6 +9,7 @@ class MediaError(Enum):
     NETWORK_ERROR = "network_error"
     FORMAT_ERROR = "format_error"
     STREAM_ERROR = "stream_error"
+    STALE_URL = "stale_url"
     UNKNOWN = "unknown"
 
 
@@ -16,6 +17,7 @@ RETRYABLE_ERRORS = {
     MediaError.NETWORK_ERROR,
     MediaError.STREAM_ERROR,
     MediaError.UNKNOWN,
+    MediaError.STALE_URL,
 }
 
 
@@ -25,10 +27,12 @@ def classify_error(error: Exception) -> MediaError:
         return MediaError.AGE_RESTRICTED
     if "unavailable" in msg or "removed" in msg or "deleted" in msg or "video not found" in msg:
         return MediaError.UNAVAILABLE
-    if "region" in msg or "country" in msg or "blocked" in msg:
+    if "region" in msg or "country" in msg or ("blocked" in msg and "age" not in msg):
         return MediaError.REGION_LOCKED
-    if "cookie" in msg or "auth" in msg or "http error 401" in msg or "http error 403" in msg:
+    if "cookie" in msg or "auth" in msg or "http error 401" in msg:
         return MediaError.AUTH_FAILED
+    if "http error 403" in msg or "forbidden" in msg or "expired" in msg or "signature" in msg:
+        return MediaError.STALE_URL
     if "timeout" in msg or "connection" in msg or "network" in msg or "eof" in msg or "empty" in msg:
         return MediaError.NETWORK_ERROR
     if "format" in msg or "no suitable" in msg or "no compatible" in msg:
@@ -47,6 +51,7 @@ def user_friendly_error(err_type: MediaError, title: str, detail: str = "") -> s
         MediaError.FORMAT_ERROR: f"No playable audio format found for **{title}**. Try a different song.",
         MediaError.STREAM_ERROR: f"Failed to stream **{title}**.",
         MediaError.NETWORK_ERROR: f"Network error while loading **{title}**. Check the connection and try again.",
+        MediaError.STALE_URL: f"**{title}**'s stream URL expired. Retrying with a fresh one.",
         MediaError.UNKNOWN: f"Failed to play **{title}**. {detail}" if detail else f"Failed to play **{title}**.",
     }
     return messages.get(err_type, messages[MediaError.UNKNOWN])

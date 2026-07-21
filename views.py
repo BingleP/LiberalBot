@@ -5,7 +5,7 @@ import discord
 from discord.ui import View, Button, Select
 
 from config import COLOUR
-from persona import say
+from persona import PersonaEvents, say
 from state import get_state
 
 
@@ -44,13 +44,13 @@ class NowPlayingView(View):
         vc = interaction.guild.voice_client
         if not vc or not vc.channel:
             await interaction.response.send_message(
-                say("offline"), ephemeral=True
+                say(PersonaEvents.OFFLINE), ephemeral=True
             )
             return False
         if interaction.user.voice and interaction.user.voice.channel == vc.channel:
             return True
         await interaction.response.send_message(
-            say("wrong_voice_channel"), ephemeral=True
+            say(PersonaEvents.WRONG_VOICE_CHANNEL), ephemeral=True
         )
         return False
 
@@ -82,8 +82,10 @@ class NowPlayingView(View):
         if vc:
             vc.stop()
             await vc.disconnect()
+            from player import logger
+            logger.info(say(PersonaEvents.LEFT_VC))
         embed = discord.Embed(
-            description=say("stopped"),
+            description=say(PersonaEvents.STOPPED),
             colour=COLOUR,
         )
         await interaction.response.edit_message(embed=embed, view=None)
@@ -109,7 +111,7 @@ class NowPlayingView(View):
         state = get_state(interaction.guild_id)
         if not state.queue:
             await interaction.response.send_message(
-                say("queue_empty"), ephemeral=True
+                say(PersonaEvents.QUEUE_EMPTY), ephemeral=True
             )
             return
         items = list(state.queue)
@@ -117,7 +119,7 @@ class NowPlayingView(View):
         state.queue = deque(items)
         await interaction.response.defer()
         embed = discord.Embed(
-            description=say("shuffle"),
+            description=say(PersonaEvents.SHUFFLE),
             colour=COLOUR,
         )
         await state.send(embed=embed)
@@ -151,11 +153,11 @@ class SearchSelect(Select):
         if self._insert_front:
             state.queue.appendleft(song)
             position = 1
-            event = "playnext"
+            event = PersonaEvents.PLAYNEXT
         else:
             state.queue.append(song)
             position = len(state.queue)
-            event = "added_to_queue"
+            event = PersonaEvents.ADDED_TO_QUEUE
 
         vc = interaction.guild.voice_client
         if vc is None:

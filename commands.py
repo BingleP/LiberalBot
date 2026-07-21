@@ -7,10 +7,10 @@ from discord import app_commands
 from discord.ext.commands import Bot
 
 from config import COLOUR, logger
-from persona import say
+from persona import PersonaEvents, say
 from song import Song
 from state import get_state
-from player import ensure_voice, is_url, play_next, update_presence, _send_now_playing
+from player import audio_source_for, ensure_voice, is_url, play_next, update_presence, _send_now_playing
 from utils import fmt_seconds, progress_bar
 from views import NowPlayingView, SearchPickerView
 
@@ -33,7 +33,7 @@ def register_commands(bot: Bot):
         except Exception as e:
             logger.error(f"yt-dlp error: {e}")
             embed = discord.Embed(
-                description=f"{say('yt_dlp_error')}\n`{e}`",
+                description=f"{say(PersonaEvents.YT_DLP_ERROR)}\n`{e}`",
                 colour=discord.Colour.red(),
             )
             await interaction.followup.send(embed=embed)
@@ -41,7 +41,7 @@ def register_commands(bot: Bot):
 
         if not songs:
             embed = discord.Embed(
-                description=say("no_results"),
+                description=say(PersonaEvents.NO_RESULTS),
                 colour=discord.Colour.red(),
             )
             await interaction.followup.send(embed=embed)
@@ -51,7 +51,7 @@ def register_commands(bot: Bot):
             view = SearchPickerView(songs, interaction.guild_id)
             embed = discord.Embed(
                 title="SEARCH RESULTS",
-                description=f"Found **{len(songs)}** transmissions. Pick one:",
+                description=say(PersonaEvents.SEARCH_RESULTS, count=len(songs)),
                 colour=COLOUR,
             )
             await interaction.followup.send(embed=embed, view=view)
@@ -65,14 +65,14 @@ def register_commands(bot: Bot):
                 await interaction.followup.send(embed=songs[0].queued_embed(len(state.queue)))
             else:
                 embed = discord.Embed(
-                    description=say("added_to_queue", title=songs[0].title),
+                    description=say(PersonaEvents.ADDED_TO_QUEUE, title=songs[0].title),
                     colour=COLOUR,
                 )
                 await interaction.followup.send(embed=embed)
         else:
             embed = discord.Embed(
                 title="PLAYLIST LOADED",
-                description=say("queued_multiple", count=len(songs)),
+                description=say(PersonaEvents.PLAYLIST_LOADED, count=len(songs)),
                 colour=COLOUR,
             )
             await interaction.followup.send(embed=embed)
@@ -97,7 +97,7 @@ def register_commands(bot: Bot):
         except Exception as e:
             logger.error(f"yt-dlp error: {e}")
             embed = discord.Embed(
-                description=f"{say('yt_dlp_error')}\n`{e}`",
+                description=f"{say(PersonaEvents.YT_DLP_ERROR)}\n`{e}`",
                 colour=discord.Colour.red(),
             )
             await interaction.followup.send(embed=embed)
@@ -105,7 +105,7 @@ def register_commands(bot: Bot):
 
         if not songs:
             embed = discord.Embed(
-                description=say("no_results"),
+                description=say(PersonaEvents.NO_RESULTS),
                 colour=discord.Colour.red(),
             )
             await interaction.followup.send(embed=embed)
@@ -115,7 +115,7 @@ def register_commands(bot: Bot):
             view = SearchPickerView(songs, interaction.guild_id, insert_front=True)
             embed = discord.Embed(
                 title="SEARCH RESULTS",
-                description=f"Found **{len(songs)}** transmissions. Pick one to play next:",
+                description=say(PersonaEvents.SEARCH_RESULTS, count=len(songs)),
                 colour=COLOUR,
             )
             await interaction.followup.send(embed=embed, view=view)
@@ -126,14 +126,14 @@ def register_commands(bot: Bot):
 
         if len(songs) == 1:
             embed = discord.Embed(
-                description=say("playnext", title=songs[0].title),
+                description=say(PersonaEvents.PLAYNEXT, title=songs[0].title),
                 colour=COLOUR,
             )
             await interaction.followup.send(embed=embed)
         else:
             embed = discord.Embed(
                 title="PLAYLIST PRIORITY LOAD",
-                description=say("playnext_multiple", count=len(songs)),
+                description=say(PersonaEvents.PLAYLIST_LOADED, count=len(songs)),
                 colour=COLOUR,
             )
             await interaction.followup.send(embed=embed)
@@ -149,7 +149,7 @@ def register_commands(bot: Bot):
 
         if vc and (vc.is_playing() or vc.is_paused()):
             vc.stop()
-            embed = discord.Embed(description=say("skipped"), colour=COLOUR)
+            embed = discord.Embed(description=say(PersonaEvents.SKIPPED), colour=COLOUR)
             await interaction.followup.send(embed=embed)
             return
 
@@ -166,18 +166,18 @@ def register_commands(bot: Bot):
             state.is_paused = False
             state.song_start_time = time()
 
-            source = discord.PCMVolumeTransformer(song.audio_source())
+            source = await audio_source_for(song)
             vc.play(source, after=lambda e: play_next(vc, state, e))
 
             embed = song.now_playing_embed()
             view = NowPlayingView(interaction.guild_id, state.loop_one, state.loop_queue, state.is_paused)
             await _send_now_playing(state, embed, view, interaction.guild_id)
             await update_presence(song)
-            embed = discord.Embed(description=say("skipped"), colour=COLOUR)
+            embed = discord.Embed(description=say(PersonaEvents.SKIPPED), colour=COLOUR)
             await interaction.followup.send(embed=embed)
             return
 
-        embed = discord.Embed(description=say("nothing_playing"), colour=discord.Colour.red())
+        embed = discord.Embed(description=say(PersonaEvents.NOTHING_PLAYING), colour=discord.Colour.red())
         await interaction.followup.send(embed=embed)
 
     @bot.tree.command(name="skipto", description="Skip to a specific position in the queue")
@@ -188,7 +188,7 @@ def register_commands(bot: Bot):
 
         if position < 1 or position > len(state.queue):
             embed = discord.Embed(
-                description=say("invalid_position"),
+                description=say(PersonaEvents.INVALID_POSITION, position=position),
                 colour=discord.Colour.red(),
             )
             await interaction.followup.send(embed=embed)
@@ -211,7 +211,7 @@ def register_commands(bot: Bot):
         if vc.is_playing() or vc.is_paused():
             vc.stop()
 
-        source = discord.PCMVolumeTransformer(song.audio_source())
+        source = await audio_source_for(song)
         vc.play(source, after=lambda e: play_next(vc, state, e))
 
         embed = song.now_playing_embed()
@@ -220,7 +220,7 @@ def register_commands(bot: Bot):
         await update_presence(song)
 
         embed = discord.Embed(
-            description=say("skipto", position=position),
+            description=say(PersonaEvents.SKIPTO, position=position),
             colour=COLOUR,
         )
         await interaction.followup.send(embed=embed)
@@ -229,11 +229,12 @@ def register_commands(bot: Bot):
     async def queue_cmd(interaction: discord.Interaction):
         state = get_state(interaction.guild_id)
         if not state.current and not state.queue:
-            embed = discord.Embed(description=say("queue_empty"), colour=discord.Colour.red())
+            embed = discord.Embed(description=say(PersonaEvents.QUEUE_EMPTY), colour=discord.Colour.red())
             await interaction.response.send_message(embed=embed)
             return
 
-        embed = discord.Embed(title="THE BATTLE PLAN", colour=COLOUR)
+        queue_title = say(PersonaEvents.QUEUE_SHOWING)
+        embed = discord.Embed(title=queue_title, colour=COLOUR)
 
         if state.current:
             loop_tag = " (loop one)" if state.loop_one else (" (loop queue)" if state.loop_queue else "")
@@ -259,7 +260,8 @@ def register_commands(bot: Bot):
                         lines.append(f"... and {remaining} more")
                     break
             embed.add_field(name="THE RESISTANCE LINEUP", value="\n".join(lines), inline=False)
-            embed.set_footer(text=f"Total upcoming time: {fmt_seconds(total)}")
+            footer = say(PersonaEvents.QUEUE_FOOTER)
+            embed.set_footer(text=f"{footer} | Total upcoming time: {fmt_seconds(total)}")
 
         await interaction.response.send_message(embed=embed)
 
@@ -273,7 +275,7 @@ def register_commands(bot: Bot):
             view = NowPlayingView(interaction.guild_id, state.loop_one, state.loop_queue, state.is_paused)
             await interaction.response.send_message(embed=embed, view=view)
         else:
-            embed = discord.Embed(description=say("nothing_playing"), colour=discord.Colour.red())
+            embed = discord.Embed(description=say(PersonaEvents.NOTHING_PLAYING), colour=discord.Colour.red())
             await interaction.response.send_message(embed=embed)
 
     @bot.tree.command(name="pause", description="Pause playback")
@@ -283,10 +285,10 @@ def register_commands(bot: Bot):
         if vc and vc.is_playing():
             vc.pause()
             state.is_paused = True
-            embed = discord.Embed(description=say("paused"), colour=COLOUR)
+            embed = discord.Embed(description=say(PersonaEvents.PAUSED), colour=COLOUR)
             await interaction.response.send_message(embed=embed)
         else:
-            embed = discord.Embed(description=say("nothing_playing"), colour=discord.Colour.red())
+            embed = discord.Embed(description=say(PersonaEvents.NOTHING_PLAYING), colour=discord.Colour.red())
             await interaction.response.send_message(embed=embed)
 
     @bot.tree.command(name="resume", description="Resume playback")
@@ -296,10 +298,10 @@ def register_commands(bot: Bot):
         if vc and vc.is_paused():
             vc.resume()
             state.is_paused = False
-            embed = discord.Embed(description=say("resumed"), colour=COLOUR)
+            embed = discord.Embed(description=say(PersonaEvents.RESUMED), colour=COLOUR)
             await interaction.response.send_message(embed=embed)
         else:
-            embed = discord.Embed(description=say("not_paused"), colour=discord.Colour.red())
+            embed = discord.Embed(description=say(PersonaEvents.NOT_PAUSED), colour=discord.Colour.red())
             await interaction.response.send_message(embed=embed)
 
     @bot.tree.command(name="stop", description="Stop playback and disconnect")
@@ -312,7 +314,7 @@ def register_commands(bot: Bot):
         if vc:
             vc.stop()
             await vc.disconnect()
-        embed = discord.Embed(description=say("stopped"), colour=COLOUR)
+        embed = discord.Embed(description=say(PersonaEvents.STOPPED), colour=COLOUR)
         await interaction.response.send_message(embed=embed)
         await update_presence(None)
 
@@ -322,7 +324,7 @@ def register_commands(bot: Bot):
         state = get_state(interaction.guild_id)
         if position < 1 or position > len(state.queue):
             embed = discord.Embed(
-                description=say("invalid_position"),
+                description=say(PersonaEvents.INVALID_POSITION, position=position),
                 colour=discord.Colour.red(),
             )
             await interaction.response.send_message(embed=embed)
@@ -331,7 +333,7 @@ def register_commands(bot: Bot):
         removed = lst.pop(position - 1)
         state.queue = deque(lst)
         embed = discord.Embed(
-            description=say("removed", title=removed.title),
+            description=say(PersonaEvents.REMOVED, title=removed.title),
             colour=COLOUR,
         )
         await interaction.response.send_message(embed=embed)
@@ -340,7 +342,7 @@ def register_commands(bot: Bot):
     async def clear(interaction: discord.Interaction):
         state = get_state(interaction.guild_id)
         state.queue.clear()
-        embed = discord.Embed(description=say("cleared"), colour=COLOUR)
+        embed = discord.Embed(description=say(PersonaEvents.CLEARED), colour=COLOUR)
         await interaction.response.send_message(embed=embed)
 
     @bot.tree.command(name="shuffle", description="Shuffle the current queue")
@@ -348,7 +350,7 @@ def register_commands(bot: Bot):
         state = get_state(interaction.guild_id)
         if not state.queue:
             embed = discord.Embed(
-                description=say("queue_empty"),
+                description=say(PersonaEvents.QUEUE_EMPTY),
                 colour=discord.Colour.red(),
             )
             await interaction.response.send_message(embed=embed)
@@ -356,7 +358,7 @@ def register_commands(bot: Bot):
         items = list(state.queue)
         random.shuffle(items)
         state.queue = deque(items)
-        embed = discord.Embed(description=say("shuffle"), colour=COLOUR)
+        embed = discord.Embed(description=say(PersonaEvents.SHUFFLE), colour=COLOUR)
         await interaction.response.send_message(embed=embed)
 
     @bot.tree.command(name="loop", description="Set loop mode")
@@ -371,15 +373,15 @@ def register_commands(bot: Bot):
         if mode == "one":
             state.loop_one = True
             state.loop_queue = False
-            embed = discord.Embed(description=say("loop_one"), colour=COLOUR)
+            embed = discord.Embed(description=say(PersonaEvents.LOOP_ONE), colour=COLOUR)
         elif mode == "queue":
             state.loop_one = False
             state.loop_queue = True
-            embed = discord.Embed(description=say("loop_queue"), colour=COLOUR)
+            embed = discord.Embed(description=say(PersonaEvents.LOOP_QUEUE), colour=COLOUR)
         else:
             state.loop_one = False
             state.loop_queue = False
-            embed = discord.Embed(description=say("loop_off"), colour=COLOUR)
+            embed = discord.Embed(description=say(PersonaEvents.LOOP_OFF), colour=COLOUR)
         await interaction.response.send_message(embed=embed)
 
     @bot.tree.command(name="retry", description="Retry playing the current song if it failed")
@@ -389,7 +391,7 @@ def register_commands(bot: Bot):
 
         if not state.current:
             embed = discord.Embed(
-                description=say("nothing_playing"),
+                description=say(PersonaEvents.NOTHING_PLAYING),
                 colour=discord.Colour.red(),
             )
             await interaction.response.send_message(embed=embed)
@@ -397,7 +399,7 @@ def register_commands(bot: Bot):
 
         if vc and (vc.is_playing() or vc.is_paused()):
             embed = discord.Embed(
-                description=say("already_playing"),
+                description=say(PersonaEvents.ALREADY_PLAYING),
                 colour=discord.Colour.red(),
             )
             await interaction.response.send_message(embed=embed)
@@ -408,7 +410,7 @@ def register_commands(bot: Bot):
                 vc = await interaction.user.voice.channel.connect()
             else:
                 embed = discord.Embed(
-                    description=say("no_voice_channel"),
+                    description=say(PersonaEvents.NO_VOICE_CHANNEL),
                     colour=discord.Colour.red(),
                 )
                 await interaction.response.send_message(embed=embed)
@@ -420,12 +422,12 @@ def register_commands(bot: Bot):
         state.song_start_time = time()
 
         embed = discord.Embed(
-            description=say("retry", title=state.current.title),
+            description=say(PersonaEvents.RETRY, title=state.current.title),
             colour=COLOUR,
         )
         await interaction.response.send_message(embed=embed)
 
-        source = discord.PCMVolumeTransformer(state.current.audio_source())
+        source = await audio_source_for(state.current)
         vc.play(source, after=lambda e: play_next(vc, state, e))
 
         np_embed = state.current.now_playing_embed()
@@ -434,9 +436,12 @@ def register_commands(bot: Bot):
 
     @bot.tree.command(name="help", description="Show the command list")
     async def help_cmd(interaction: discord.Interaction):
+        title, description, footer = say_embed(
+            PersonaEvents.HELP,
+        )
         embed = discord.Embed(
-            title="RESISTANCE PLAYBOOK",
-            description=say("help"),
+            title=title or "Help",
+            description=description,
             colour=COLOUR,
         )
         commands_list = [
@@ -457,5 +462,6 @@ def register_commands(bot: Bot):
         ]
         for name, desc in commands_list:
             embed.add_field(name=name, value=desc, inline=False)
-        embed.set_footer(text="Use these commands to keep the signal alive.")
+        if footer:
+            embed.set_footer(text=footer)
         await interaction.response.send_message(embed=embed)

@@ -4,6 +4,13 @@ from logging.handlers import RotatingFileHandler
 # ── BOT IDENTITY ────────────────────────────────────────────────────────────
 COLOUR = 0x9B59B6  # purple accent
 
+# ── PERSONA ─────────────────────────────────────────────────────────────────
+PERSONA_ENABLED = True
+
+# ── WARM-UP / STREAM URL FRESHNESS ──────────────────────────────────────────
+WARMUP_URL = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+MAX_STREAM_URL_AGE = 30 * 60  # 30 minutes
+
 # ── PATHS ───────────────────────────────────────────────────────────────────
 YT_COOKIE_FILE = "/home/bingle/Documents/www.youtube.com_cookies.txt"
 

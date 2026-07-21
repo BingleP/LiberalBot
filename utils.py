@@ -1,6 +1,3 @@
-import math
-
-
 def fmt_seconds(s: int) -> str:
     m, s = divmod(s, 60)
     h, m = divmod(m, 60)

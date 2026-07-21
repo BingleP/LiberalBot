@@ -3,13 +3,19 @@ import time
 
 import discord
 
-from config import COLOUR, logger
-from errors import classify_error, RETRYABLE_ERRORS, user_friendly_error
-from persona import say
+from audio import YTDLSource
+from config import COLOUR, logger, MAX_STREAM_URL_AGE
+from errors import classify_error, RETRYABLE_ERRORS, user_friendly_error, MediaError
+from persona import PersonaEvents, say, say_status
 import state as state_module
 from state import GuildState, get_state
 from utils import progress_bar
 from views import NowPlayingView
+
+
+def _run(coro):
+    loop = state_module.bot_loop or (state_module.bot.loop if state_module.bot else None) or asyncio.get_event_loop()
+    return asyncio.run_coroutine_threadsafe(coro, loop)
 
 
 async def _notify_error(state: GuildState, msg: str):
@@ -26,9 +32,15 @@ async def _clear_error_message(state: GuildState):
         state.last_error_message = None
 
 
-def _run(coro):
-    loop = state_module.bot_loop or (state_module.bot.loop if state_module.bot else None) or asyncio.get_event_loop()
-    return asyncio.run_coroutine_threadsafe(coro, loop)
+async def audio_source_for(song):
+    """Build a PCMVolumeTransformer around an FFmpeg source, re-extracting if the URL is stale."""
+    age = time.time() - song.extracted_at
+    if age >= MAX_STREAM_URL_AGE or not song.stream_url:
+        logger.info(f"Stream URL for '{song.title}' is stale ({age:.0f}s old) or missing, re-extracting...")
+        stream_url, headers = await song.get_stream_url(force=True)
+    else:
+        stream_url, headers = song.stream_url, song.stream_headers
+    return discord.PCMVolumeTransformer(YTDLSource(stream_url, headers))
 
 
 def play_next(vc: discord.VoiceClient, state: GuildState, error=None):
@@ -57,9 +69,16 @@ def play_next(vc: discord.VoiceClient, state: GuildState, error=None):
             )
 
             backoff = 2 ** (state.current.retry_count - 1)
-            time.sleep(backoff)
+            _run(asyncio.sleep(backoff)).result()
 
-            source = discord.PCMVolumeTransformer(state.current.audio_source())
+            # If the URL looks stale, force a re-extract before retrying.
+            if media_error in {MediaError.STREAM_ERROR, MediaError.AUTH_FAILED, MediaError.UNKNOWN}:
+                try:
+                    _run(state.current.get_stream_url(force=True)).result()
+                except Exception as e:
+                    logger.warning(f"Could not re-extract stream URL for '{title}': {e}")
+
+            source = _run(audio_source_for(state.current)).result()
             vc.play(source, after=lambda e: play_next(vc, state, e))
             return
 
@@ -75,6 +94,7 @@ def play_next(vc: discord.VoiceClient, state: GuildState, error=None):
         return
 
     if state.current:
+        logger.info(say(PersonaEvents.SONG_FINISHED, title=state.current.title))
         state.current.retry_count = 0
         state.current.last_error = None
 
@@ -82,8 +102,9 @@ def play_next(vc: discord.VoiceClient, state: GuildState, error=None):
 
     if state.loop_one and state.current:
         state.is_paused = False
-        source = discord.PCMVolumeTransformer(state.current.audio_source())
+        source = _run(audio_source_for(state.current)).result()
         vc.play(source, after=lambda e: play_next(vc, state, e))
+        logger.info(say(PersonaEvents.SONG_STARTED, title=state.current.title))
         return
 
     if state.loop_queue and state.current:
@@ -94,7 +115,7 @@ def play_next(vc: discord.VoiceClient, state: GuildState, error=None):
         state.cleanup()
         embed = discord.Embed(
             title="TRANSMISSION ENDED",
-            description=say("queue_empty"),
+            description=say(PersonaEvents.QUEUE_EMPTY),
             colour=COLOUR,
         )
         _run(state.send(embed=embed))
@@ -105,8 +126,9 @@ def play_next(vc: discord.VoiceClient, state: GuildState, error=None):
     state.current = song
     state.is_paused = False
     state.song_start_time = time.time()
-    source = discord.PCMVolumeTransformer(song.audio_source())
+    source = _run(audio_source_for(song)).result()
     vc.play(source, after=lambda e: play_next(vc, state, e))
+    logger.info(say(PersonaEvents.SONG_STARTED, title=song.title))
 
     embed = song.now_playing_embed()
     view = NowPlayingView(vc.guild.id, state.loop_one, state.loop_queue, state.is_paused)
@@ -160,22 +182,17 @@ def _start_progress(guild_id: int):
 async def _update_presence(song):
     if not state_module.bot:
         return
-    if song:
-        await state_module.bot.change_presence(
-            activity=discord.Activity(type=discord.ActivityType.listening, name=song.title),
-            status=discord.Status.online,
-        )
-    else:
-        await state_module.bot.change_presence(
-            activity=discord.Activity(type=discord.ActivityType.listening, name="the globalists | /play to resist"),
-            status=discord.Status.idle,
-        )
+    activity = say_status(playing_title=song.title if song else None)
+    await state_module.bot.change_presence(
+        activity=activity,
+        status=discord.Status.online if song else discord.Status.idle,
+    )
 
 
 async def ensure_voice(interaction: discord.Interaction) -> discord.VoiceClient | None:
     if interaction.user.voice is None:
         embed = discord.Embed(
-            description=say("no_voice_channel"),
+            description=say(PersonaEvents.NO_VOICE_CHANNEL),
             colour=discord.Colour.red(),
         )
         await interaction.followup.send(embed=embed)
@@ -185,8 +202,10 @@ async def ensure_voice(interaction: discord.Interaction) -> discord.VoiceClient 
 
     if vc is None:
         vc = await interaction.user.voice.channel.connect()
+        logger.info(say(PersonaEvents.JOINED_VC))
     elif vc.channel != interaction.user.voice.channel:
         await vc.move_to(interaction.user.voice.channel)
+        logger.info(say(PersonaEvents.MOVED_VC))
 
     return vc
 
